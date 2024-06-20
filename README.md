@@ -2,15 +2,15 @@
   <img src="https://user-images.githubusercontent.com/236501/85893648-1c92e880-b7a8-11ea-926d-95355b8175c7.png" width="128" height="128" />
 </p>
 <h3 align="center">Capacitor Voice Recorder</h3>
-<p align="center"><strong><code>xitronix/cap-voice-recorder</code></strong></p>
+<p align="center"><strong><code>xitronix/cap-voice-rec</code></strong></p>
 <p align="center">Capacitor plugin for simple voice recording (For Capacitor 6)</p>
 
 <p align="center">
   <img src="https://img.shields.io/maintenance/yes/2024" />
-  <a href="https://www.npmjs.com/package/cap-voice-recorder"><img src="https://img.shields.io/npm/l/cap-voice-recorder" /></a>
+  <a href="https://www.npmjs.com/package/cap-voice-rec"><img src="https://img.shields.io/npm/l/cap-voice-rec" /></a>
 <br>
-  <a href="https://www.npmjs.com/package/cap-voice-recorder"><img src="https://img.shields.io/npm/dw/cap-voice-recorder" /></a>
-  <a href="https://www.npmjs.com/package/cap-voice-recorder"><img src="https://img.shields.io/npm/v/cap-voice-recorder" /></a>
+  <a href="https://www.npmjs.com/package/cap-voice-rec"><img src="https://img.shields.io/npm/dw/cap-voice-rec" /></a>
+  <a href="https://www.npmjs.com/package/cap-voice-rec"><img src="https://img.shields.io/npm/v/cap-voice-rec" /></a>
 </p>
 
 ## Maintainers
@@ -23,12 +23,12 @@ Implementation is based on [tchvu3 implementation](https://github.com/tchvu3/cap
 ## Installation
 
 ```
-npm install --save cap-voice-recorder
+npm install --save cap-voice-rec
 npx cap sync
 ```
 
 #### ios note
-cap-voice-recorder
+cap-voice-rec
 Make sure to include the ```NSMicrophoneUsageDescription```
 key, and a corresponding purpose string in your app's Info.plist
 
@@ -111,7 +111,7 @@ requestAudioRecordingPermission | ✅ | ✅ | ✅ |
 ```
 
 // only 'VoiceRecorder' is mandatory, the rest is for typing
-import { VoiceRecorder, VoiceRecorderPlugin, RecordingData, GenericResponse, CurrentRecordingStatus } from 'cap-voice-recorder';
+import { VoiceRecorder, VoiceRecorderPlugin, RecordingData, GenericResponse, CurrentRecordingStatus } from 'cap-voice-rec';
 
 // will print true / false based on the ability of the current device (or web browser) to record audio
 VoiceRecorder.canDeviceVoiceRecord().then((result: GenericResponse) => console.log(result.value))
