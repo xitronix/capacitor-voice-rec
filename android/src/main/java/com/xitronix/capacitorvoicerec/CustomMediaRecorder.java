@@ -1,4 +1,4 @@
-package com.tchvu3.capacitorvoicerecorder;
+package com.xitronix.capacitorvoicerec;
 
 import android.content.Context;
 import android.media.MediaRecorder;

@@ -1,4 +1,4 @@
-package com.tchvu3.capacitorvoicerecorder;
+package com.xitronix.capacitorvoicerec;
 
 import android.annotation.SuppressLint;
 import android.app.Notification;
