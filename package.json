@@ -1,6 +1,6 @@
 {
   "name": "capacitor-voice-rec",
-  "version": "6.0.1",
+  "version": "6.0.2",
   "description": "Capacitor plugin for voice recording",
   "main": "dist/plugin.cjs.js",
   "module": "dist/esm/index.js",
@@ -81,11 +81,19 @@
       "ecmaVersion": 2021,
       "sourceType": "module"
     },
-    "plugins": ["@typescript-eslint"],
+    "plugins": [
+      "@typescript-eslint"
+    ],
     "extends": [
       "eslint:recommended",
       "plugin:@typescript-eslint/recommended"
-    ]
+    ],
+    "env": {
+      "browser": true
+    },
+    "rules": {
+      "no-empty": "off"
+    }
   },
   "capacitor": {
     "ios": {

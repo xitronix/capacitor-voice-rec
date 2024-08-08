@@ -2,12 +2,11 @@ package com.xitronix.capacitorvoicerec;
 
 import android.Manifest;
 import android.content.Context;
+import android.content.Intent;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.os.Build;
 import android.util.Base64;
-import android.content.Intent;
-
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -15,15 +14,14 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
-
 import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 
 @CapacitorPlugin(
-        name = "VoiceRecorder",
-        permissions = {@Permission(alias = VoiceRecorder.RECORD_AUDIO_ALIAS, strings = {Manifest.permission.RECORD_AUDIO})}
+    name = "VoiceRecorder",
+    permissions = { @Permission(alias = VoiceRecorder.RECORD_AUDIO_ALIAS, strings = { Manifest.permission.RECORD_AUDIO }) }
 )
 public class VoiceRecorder extends Plugin {
 
@@ -31,7 +29,7 @@ public class VoiceRecorder extends Plugin {
     private CustomMediaRecorder mediaRecorder;
     private boolean useForegroundService = false;
 
-    @PluginMethod()
+    @PluginMethod
     public void canDeviceVoiceRecord(PluginCall call) {
         if (CustomMediaRecorder.canPhoneCreateMediaRecorder(getContext())) {
             call.resolve(ResponseGenerator.successResponse());
@@ -40,7 +38,7 @@ public class VoiceRecorder extends Plugin {
         }
     }
 
-    @PluginMethod()
+    @PluginMethod
     public void requestAudioRecordingPermission(PluginCall call) {
         if (doesUserGaveAudioRecordingPermission()) {
             call.resolve(ResponseGenerator.successResponse());
@@ -54,12 +52,12 @@ public class VoiceRecorder extends Plugin {
         this.hasAudioRecordingPermission(call);
     }
 
-    @PluginMethod()
+    @PluginMethod
     public void hasAudioRecordingPermission(PluginCall call) {
         call.resolve(ResponseGenerator.fromBoolean(doesUserGaveAudioRecordingPermission()));
     }
 
-    @PluginMethod()
+    @PluginMethod
     public void startRecording(PluginCall call) {
         if (!CustomMediaRecorder.canPhoneCreateMediaRecorder(getContext())) {
             call.reject(Messages.CANNOT_RECORD_ON_THIS_PHONE);
@@ -100,7 +98,7 @@ public class VoiceRecorder extends Plugin {
         }
     }
 
-    @PluginMethod()
+    @PluginMethod
     public void stopRecording(PluginCall call) {
         if (mediaRecorder == null) {
             call.reject(Messages.RECORDING_HAS_NOT_STARTED);
@@ -111,9 +109,9 @@ public class VoiceRecorder extends Plugin {
             mediaRecorder.stopRecording();
             File recordedFile = mediaRecorder.getOutputFile();
             RecordData recordData = new RecordData(
-                    readRecordedFileAsBase64(recordedFile),
-                    getMsDurationOfAudioFile(recordedFile.getAbsolutePath()),
-                    "audio/aac"
+                readRecordedFileAsBase64(recordedFile),
+                getMsDurationOfAudioFile(recordedFile.getAbsolutePath()),
+                "audio/aac"
             );
             if (recordData.getRecordDataBase64() == null || recordData.getMsDuration() < 0) {
                 call.reject(Messages.EMPTY_RECORDING);
@@ -136,7 +134,7 @@ public class VoiceRecorder extends Plugin {
         }
     }
 
-    @PluginMethod()
+    @PluginMethod
     public void pauseRecording(PluginCall call) {
         if (mediaRecorder == null) {
             call.reject(Messages.RECORDING_HAS_NOT_STARTED);
@@ -149,7 +147,7 @@ public class VoiceRecorder extends Plugin {
         }
     }
 
-    @PluginMethod()
+    @PluginMethod
     public void resumeRecording(PluginCall call) {
         if (mediaRecorder == null) {
             call.reject(Messages.RECORDING_HAS_NOT_STARTED);
@@ -162,7 +160,7 @@ public class VoiceRecorder extends Plugin {
         }
     }
 
-    @PluginMethod()
+    @PluginMethod
     public void getCurrentStatus(PluginCall call) {
         if (mediaRecorder == null) {
             call.resolve(ResponseGenerator.statusResponse(CurrentRecordingStatus.NONE));
@@ -201,9 +199,7 @@ public class VoiceRecorder extends Plugin {
 
     private boolean isMicrophoneOccupied() {
         AudioManager audioManager = (AudioManager) this.getContext().getSystemService(Context.AUDIO_SERVICE);
-        if (audioManager == null)
-            return true;
+        if (audioManager == null) return true;
         return audioManager.getMode() != AudioManager.MODE_NORMAL;
     }
-
 }

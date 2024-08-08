@@ -25,7 +25,9 @@ public class ForegroundService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        Notification notification = buildNotification(intent.hasExtra(EXTRA_ICON_RES_NAME) ? intent.getStringExtra(EXTRA_ICON_RES_NAME): "icon_default");
+        Notification notification = buildNotification(
+            intent.hasExtra(EXTRA_ICON_RES_NAME) ? intent.getStringExtra(EXTRA_ICON_RES_NAME) : "icon_default"
+        );
         // Start the foreground service with the appropriate type
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
@@ -47,19 +49,20 @@ public class ForegroundService extends Service {
     }
 
     private Notification buildNotification(String notificationIconResName) {
-        @SuppressLint("DiscouragedApi") int iconResId = getResources().getIdentifier(notificationIconResName, "drawable" ,getPackageName());
+        @SuppressLint("DiscouragedApi")
+        int iconResId = getResources().getIdentifier(notificationIconResName, "drawable", getPackageName());
 
         if (iconResId == 0) {
             iconResId = R.drawable.default_icon; // fallback to default icon
         }
 
         return new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("Recording in Progress")
-                .setContentText("Remember to stop recording")
-                .setSmallIcon(iconResId) // Ensure you have a small icon set
-                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-                .setCategory(NotificationCompat.CATEGORY_SERVICE)
-                .build();
+            .setContentTitle("Recording in Progress")
+            .setContentText("Remember to stop recording")
+            .setSmallIcon(iconResId) // Ensure you have a small icon set
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .build();
     }
 
     private void createNotificationChannel() {
@@ -67,9 +70,9 @@ public class ForegroundService extends Service {
             NotificationManager manager = getSystemService(NotificationManager.class);
             if (manager != null) {
                 NotificationChannel serviceChannel = new NotificationChannel(
-                        CHANNEL_ID,
-                        "Voice Recorder Service Channel",
-                        NotificationManager.IMPORTANCE_LOW
+                    CHANNEL_ID,
+                    "Voice Recorder Service Channel",
+                    NotificationManager.IMPORTANCE_LOW
                 );
                 serviceChannel.setSound(null, null);
                 manager.createNotificationChannel(serviceChannel);

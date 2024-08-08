@@ -48,6 +48,7 @@ public class VoiceRecorder: CAPPlugin {
             call.reject(Messages.CANNOT_RECORD_ON_THIS_PHONE)
         } else {
             call.resolve(ResponseGenerator.successResponse())
+            // NotificationCenter.default.addObserver(self, selector: #selector(handleInterruption), name: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance())
         }
     }
     
@@ -74,6 +75,9 @@ public class VoiceRecorder: CAPPlugin {
         if recordData.recordDataBase64 == nil || recordData.msDuration < 0 {
             call.reject(Messages.EMPTY_RECORDING)
         } else {
+            // NotificationCenter.default.removeObserver(self,
+            //     name: AVAudioSession.interruptionNotification,
+            //     object: AVAudioSession.sharedInstance())
             call.resolve(ResponseGenerator.dataResponse(recordData.toDictionary()))
         }
     }
@@ -127,4 +131,38 @@ public class VoiceRecorder: CAPPlugin {
         return Int(CMTimeGetSeconds(AVURLAsset(url: filePath!).duration) * 1000)
     }
     
+     
+    // @objc func handleInterruption(_ notification: Notification) {
+    //     guard let userInfo = notification.userInfo,
+    //         let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+    //         let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+    //             return
+    //     }
+        
+    //     print("VoiceRecorder.swift >> type")
+    //     print(type)
+    //     print(typeValue)
+
+    //     switch type {
+    //     case .began:
+    //         print("VoiceRecorder.swift >> interuption began")
+    //         let call = CAPPluginCall() //
+    //         self.pauseRecording(call)
+    //     case .ended:
+    //         print("VoiceRecorder.swift >> interuption ended")
+    //         guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
+    //         let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+    //         print("should resume")
+    //         print(options.contains(.shouldResume))
+    //         if options.contains(.shouldResume) {
+    //             print("VoiceRecorder.swift >> should resume recording")
+    //             let call = CAPPluginCall() //
+    //             self.resumeRecording(call)
+    //         } else {
+    //             // An interruption ended. Don't resume playback.
+    //         }
+            
+    //     default: ()
+    //     }
+    // }
 }

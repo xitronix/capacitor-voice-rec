@@ -1,8 +1,7 @@
 import Foundation
 import AVFoundation
 
-class CustomMediaRecorder {
-    
+class CustomMediaRecorder:NSObject {
     private var recordingSession: AVAudioSession!
     private var audioRecorder: AVAudioRecorder!
     private var audioFilePath: URL!
@@ -21,10 +20,14 @@ class CustomMediaRecorder {
     }
     
     public func startRecording() -> Bool {
+        NotificationCenter.default.addObserver(self,
+                                                selector: #selector(handleInterruption),
+                                                name: AVAudioSession.interruptionNotification,
+                                                object: AVAudioSession.sharedInstance())
         do {
             recordingSession = AVAudioSession.sharedInstance()
             originalRecordingSessionCategory = recordingSession.category
-            try recordingSession.setCategory(AVAudioSession.Category.playAndRecord)
+            try recordingSession.setCategory(AVAudioSession.Category.playAndRecord, options: .mixWithOthers)
             try recordingSession.setActive(true)
             audioFilePath = getDirectoryToSaveAudioFile().appendingPathComponent("\(UUID().uuidString).aac")
             audioRecorder = try AVAudioRecorder(url: audioFilePath, settings: settings)
@@ -64,9 +67,14 @@ class CustomMediaRecorder {
     
     public func resumeRecording() -> Bool {
         if(status == CurrentRecordingStatus.PAUSED) {
-            audioRecorder.record()
-            status = CurrentRecordingStatus.RECORDING
-            return true
+            do{
+                try recordingSession.setActive(true)
+                audioRecorder.record()
+                status = CurrentRecordingStatus.RECORDING
+                return true
+            }catch{
+                return false
+            }
         } else {
             return false
         }
@@ -76,4 +84,28 @@ class CustomMediaRecorder {
         return status
     }
     
+}
+
+extension CustomMediaRecorder:AVAudioRecorderDelegate {
+    @objc func handleInterruption(notification: Notification) {
+        print("CUSTOM RECORDER \(#function)")
+           guard let userInfo = notification.userInfo,
+                 let interruptionTypeRawValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+                 let interruptionType = AVAudioSession.InterruptionType(rawValue: interruptionTypeRawValue) else {
+               return
+           }
+
+           switch interruptionType {
+           case .began:
+               let _ = pauseRecording()
+           case .ended:
+               guard let optionsRawValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
+               let options = AVAudioSession.InterruptionOptions(rawValue: optionsRawValue)
+               if options.contains(.shouldResume) {
+                   let _ = resumeRecording()
+               }
+           @unknown default:
+               break
+           }
+       }
 }
