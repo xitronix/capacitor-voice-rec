@@ -6,12 +6,13 @@ import Capacitor
 public class VoiceRecorder: CAPPlugin {
 
     private var customMediaRecorder: CustomMediaRecorder? = nil
-    
-    @objc func canDeviceVoiceRecord(_ call: CAPPluginCall) {
+    private var audioFilePath: URL?
+
+    @objc public func canDeviceVoiceRecord(_ call: CAPPluginCall) {
         call.resolve(ResponseGenerator.successResponse())
     }
     
-    @objc func requestAudioRecordingPermission(_ call: CAPPluginCall) {
+    @objc public func requestAudioRecordingPermission(_ call: CAPPluginCall) {
         AVAudioSession.sharedInstance().requestRecordPermission { granted in
             if granted {
                 call.resolve(ResponseGenerator.successResponse())
@@ -21,12 +22,12 @@ public class VoiceRecorder: CAPPlugin {
         }
     }
     
-    @objc func hasAudioRecordingPermission(_ call: CAPPluginCall) {
+    @objc public func hasAudioRecordingPermission(_ call: CAPPluginCall) {
         call.resolve(ResponseGenerator.fromBoolean(doesUserGaveAudioRecordingPermission()))
     }
     
     
-    @objc func startRecording(_ call: CAPPluginCall) {
+    @objc public func startRecording(_ call: CAPPluginCall) {
         if(!doesUserGaveAudioRecordingPermission()) {
             call.reject(Messages.MISSING_PERMISSION)
             return
@@ -48,11 +49,10 @@ public class VoiceRecorder: CAPPlugin {
             call.reject(Messages.CANNOT_RECORD_ON_THIS_PHONE)
         } else {
             call.resolve(ResponseGenerator.successResponse())
-            // NotificationCenter.default.addObserver(self, selector: #selector(handleInterruption), name: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance())
         }
     }
     
-    @objc func stopRecording(_ call: CAPPluginCall) {
+    @objc public func stopRecording(_ call: CAPPluginCall) {
         if(customMediaRecorder == nil) {
             call.reject(Messages.RECORDING_HAS_NOT_STARTED)
             return
@@ -66,23 +66,27 @@ public class VoiceRecorder: CAPPlugin {
             call.reject(Messages.FAILED_TO_FETCH_RECORDING)
             return
         }
+        audioFilePath = audioFileUrl
         let recordData = RecordData(
             recordDataBase64: readFileAsBase64(audioFileUrl),
             mimeType: "audio/aac",
             msDuration: getMsDurationOfAudioFile(audioFileUrl)
         )
-        customMediaRecorder = nil
+
         if recordData.recordDataBase64 == nil || recordData.msDuration < 0 {
             call.reject(Messages.EMPTY_RECORDING)
         } else {
-            // NotificationCenter.default.removeObserver(self,
-            //     name: AVAudioSession.interruptionNotification,
-            //     object: AVAudioSession.sharedInstance())
             call.resolve(ResponseGenerator.dataResponse(recordData.toDictionary()))
+            customMediaRecorder?.deleteRecording()
         }
+        customMediaRecorder = nil
+    }
+
+    @objc public func isPause() -> Bool{
+        return (customMediaRecorder?.getCurrentStatus() == .PAUSED)
     }
     
-    @objc func pauseRecording(_ call: CAPPluginCall) {
+    @objc public func pauseRecording(_ call: CAPPluginCall) {
         if(customMediaRecorder == nil) {
             call.reject(Messages.RECORDING_HAS_NOT_STARTED)
         } else {
@@ -90,7 +94,7 @@ public class VoiceRecorder: CAPPlugin {
         }
     }
     
-    @objc func resumeRecording(_ call: CAPPluginCall) {
+    @objc public func resumeRecording(_ call: CAPPluginCall) {
         if(customMediaRecorder == nil) {
             call.reject(Messages.RECORDING_HAS_NOT_STARTED)
         } else {
@@ -98,7 +102,7 @@ public class VoiceRecorder: CAPPlugin {
         }
     }
     
-    @objc func getCurrentStatus(_ call: CAPPluginCall) {
+    @objc public func getCurrentStatus(_ call: CAPPluginCall) {
         if(customMediaRecorder == nil) {
             call.resolve(ResponseGenerator.statusResponse(CurrentRecordingStatus.NONE))
         } else {
@@ -106,11 +110,11 @@ public class VoiceRecorder: CAPPlugin {
         }
     }
     
-    func doesUserGaveAudioRecordingPermission() -> Bool {
+    public func doesUserGaveAudioRecordingPermission() -> Bool {
         return AVAudioSession.sharedInstance().recordPermission == AVAudioSession.RecordPermission.granted
     }
     
-    func readFileAsBase64(_ filePath: URL?) -> String? {
+    public func readFileAsBase64(_ filePath: URL?) -> String? {
         if(filePath == nil) {
             return nil
         }
@@ -124,45 +128,14 @@ public class VoiceRecorder: CAPPlugin {
         return nil
     }
     
-    func getMsDurationOfAudioFile(_ filePath: URL?) -> Int {
+    public func getMsDurationOfAudioFile(_ filePath: URL?) -> Int {
         if filePath == nil {
             return -1
         }
         return Int(CMTimeGetSeconds(AVURLAsset(url: filePath!).duration) * 1000)
     }
-    
-     
-    // @objc func handleInterruption(_ notification: Notification) {
-    //     guard let userInfo = notification.userInfo,
-    //         let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-    //         let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
-    //             return
-    //     }
-        
-    //     print("VoiceRecorder.swift >> type")
-    //     print(type)
-    //     print(typeValue)
-
-    //     switch type {
-    //     case .began:
-    //         print("VoiceRecorder.swift >> interuption began")
-    //         let call = CAPPluginCall() //
-    //         self.pauseRecording(call)
-    //     case .ended:
-    //         print("VoiceRecorder.swift >> interuption ended")
-    //         guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
-    //         let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-    //         print("should resume")
-    //         print(options.contains(.shouldResume))
-    //         if options.contains(.shouldResume) {
-    //             print("VoiceRecorder.swift >> should resume recording")
-    //             let call = CAPPluginCall() //
-    //             self.resumeRecording(call)
-    //         } else {
-    //             // An interruption ended. Don't resume playback.
-    //         }
-            
-    //     default: ()
-    //     }
-    // }
+    public func getAudioFile() -> URL? {
+        return audioFilePath
+    }
 }
+

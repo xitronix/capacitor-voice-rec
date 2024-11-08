@@ -16,7 +16,9 @@ class CustomMediaRecorder:NSObject {
     ]
     
     private func getDirectoryToSaveAudioFile() -> URL {
-        return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+//        return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        return (FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)).last!
+
     }
     
     public func startRecording() -> Bool {
@@ -82,6 +84,22 @@ class CustomMediaRecorder:NSObject {
     
     public func getCurrentStatus() -> CurrentRecordingStatus {
         return status
+    }
+    
+    public func deleteRecording() {
+        let fileManager = FileManager.default
+           
+        do {
+            // Check if the file exists before attempting to delete
+            if fileManager.fileExists(atPath: audioFilePath.path) {
+                try fileManager.removeItem(at: audioFilePath)
+                print("Deleted: \(audioFilePath.lastPathComponent)")
+            } else {
+                print("File does not exist at path: \(audioFilePath.path)")
+            }
+        } catch {
+            print("Error deleting file at \(audioFilePath.path): \(error)")
+        }
     }
     
 }
