@@ -25,8 +25,7 @@ public class VoiceRecorder: CAPPlugin {
     @objc public func hasAudioRecordingPermission(_ call: CAPPluginCall) {
         call.resolve(ResponseGenerator.fromBoolean(doesUserGaveAudioRecordingPermission()))
     }
-    
-    
+
     @objc public func startRecording(_ call: CAPPluginCall) {
         if(!doesUserGaveAudioRecordingPermission()) {
             call.reject(Messages.MISSING_PERMISSION)
@@ -48,10 +47,11 @@ public class VoiceRecorder: CAPPlugin {
         if successfullyStartedRecording == false {
             call.reject(Messages.CANNOT_RECORD_ON_THIS_PHONE)
         } else {
-            call.resolve(ResponseGenerator.successResponse())
+            audioFilePath = customMediaRecorder?.getOutputFile()
+            call.resolve(["filePath": audioFilePath?.absoluteString ?? ""])
         }
     }
-    
+
     @objc public func stopRecording(_ call: CAPPluginCall) {
         if(customMediaRecorder == nil) {
             call.reject(Messages.RECORDING_HAS_NOT_STARTED)
@@ -59,29 +59,28 @@ public class VoiceRecorder: CAPPlugin {
         }
         
         customMediaRecorder?.stopRecording()
+        audioFilePath = customMediaRecorder?.getOutputFile()
         
-        let audioFileUrl = customMediaRecorder?.getOutputFile()
-        if(audioFileUrl == nil) {
+        if(audioFilePath == nil) {
             customMediaRecorder = nil
             call.reject(Messages.FAILED_TO_FETCH_RECORDING)
             return
         }
-        audioFilePath = audioFileUrl
+
         let recordData = RecordData(
-            recordDataBase64: readFileAsBase64(audioFileUrl),
             mimeType: "audio/aac",
-            msDuration: getMsDurationOfAudioFile(audioFileUrl)
+            msDuration: getMsDurationOfAudioFile(audioFilePath),
+            filePath: audioFilePath!.absoluteString
         )
 
-        if recordData.recordDataBase64 == nil || recordData.msDuration < 0 {
+        if recordData.filePath == nil || recordData.msDuration < 0 {
             call.reject(Messages.EMPTY_RECORDING)
         } else {
             call.resolve(ResponseGenerator.dataResponse(recordData.toDictionary()))
-            customMediaRecorder?.deleteRecording()
+            // customMediaRecorder?.deleteRecording()
         }
         customMediaRecorder = nil
     }
-
     @objc public func isPause() -> Bool{
         return (customMediaRecorder?.getCurrentStatus() == .PAUSED)
     }
@@ -138,4 +137,5 @@ public class VoiceRecorder: CAPPlugin {
         return audioFilePath
     }
 }
+
 

@@ -7,6 +7,8 @@ export default {
       name: 'capacitorVoiceRec',
       globals: {
         '@capacitor/core': 'capacitorExports',
+        'get-blob-duration': 'getBlobDuration',
+        'idb': 'idb',
       },
       sourcemap: true,
       inlineDynamicImports: true,
@@ -18,5 +20,5 @@ export default {
       inlineDynamicImports: true,
     },
   ],
-  external: ['@capacitor/core'],
+  external: ['@capacitor/core', 'get-blob-duration', 'idb'],
 };
