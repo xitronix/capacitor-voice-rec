@@ -31,6 +31,7 @@ class CustomMediaRecorder:NSObject {
             originalRecordingSessionCategory = recordingSession.category
             try recordingSession.setCategory(AVAudioSession.Category.playAndRecord, options: .mixWithOthers)
             try recordingSession.setActive(true)
+            // TODO: set audio file path
             audioFilePath = getDirectoryToSaveAudioFile().appendingPathComponent("\(UUID().uuidString).aac")
             audioRecorder = try AVAudioRecorder(url: audioFilePath, settings: settings)
             audioRecorder.record()

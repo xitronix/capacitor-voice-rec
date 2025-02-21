@@ -11,6 +11,12 @@ public class ResponseGenerator {
         return value ? successResponse() : failResponse();
     }
 
+    public static JSObject successResponse(String filePath) {
+        JSObject success = new JSObject();
+        success.put(VALUE_RESPONSE_KEY, true);
+        success.put("filePath", filePath);
+        return success;
+    }
     public static JSObject successResponse() {
         JSObject success = new JSObject();
         success.put(VALUE_RESPONSE_KEY, true);

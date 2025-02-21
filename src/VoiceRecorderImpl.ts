@@ -1,7 +1,9 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 import getBlobDuration from 'get-blob-duration';
+import { openDB } from 'idb';
 
-import type { Base64String, CurrentRecordingStatus, GenericResponse, RecordingData } from './definitions';
+import type { CurrentRecordingStatus, GenericResponse, RecordingData } from './definitions';
+
 import {
   alreadyRecordingError,
   couldNotQueryPermissionStatusError,
@@ -23,6 +25,9 @@ export class VoiceRecorderImpl {
   private mediaRecorder: MediaRecorder | null = null;
   private chunks: Blob[] = [];
   private pendingResult: Promise<RecordingData> = neverResolvingPromise();
+
+  static readonly DB_NAME = 'capacitor-voice-rec-db';
+  static readonly DB_STORE_NAME = 'recordings';
 
   public static async canDeviceVoiceRecord(): Promise<GenericResponse> {
     if (navigator?.mediaDevices?.getUserMedia == null || VoiceRecorderImpl.getSupportedMimeType() == null) {
@@ -147,10 +152,15 @@ export class VoiceRecorderImpl {
           reject(emptyRecordingError());
           return;
         }
-        const recordDataBase64 = await VoiceRecorderImpl.blobToBase64(blobVoiceRecording);
+        // TODO: return uri
+        // const recordDataBase64 = await VoiceRecorderImpl.blobToBase64(blobVoiceRecording);
+        // todo save blob to filesystem
         const recordingDuration = await getBlobDuration(blobVoiceRecording);
         this.prepareInstanceForNextOperation();
-        resolve({ value: { recordDataBase64, mimeType, msDuration: recordingDuration * 1000 } });
+        // TODO: Handle path on WEB
+        const filePath = await saveToIndexedDB(blobVoiceRecording);
+
+        resolve({ value: { mimeType, msDuration: recordingDuration * 1000, filePath } });
       };
       this.mediaRecorder.ondataavailable = (event: BlobEvent) => this.chunks.push(event.data);
       this.mediaRecorder.start();
@@ -163,18 +173,18 @@ export class VoiceRecorderImpl {
     throw failedToRecordError();
   }
 
-  private static blobToBase64(blob: Blob): Promise<Base64String> {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const recordingResult = String(reader.result);
-        const splitResult = recordingResult.split('base64,');
-        const toResolve = splitResult.length > 1 ? splitResult[1] : recordingResult;
-        resolve(toResolve.trim());
-      };
-      reader.readAsDataURL(blob);
-    });
-  }
+  // private static blobToBase64(blob: Blob): Promise<Base64String> {
+  //   return new Promise((resolve) => {
+  //     const reader = new FileReader();
+  //     reader.onloadend = () => {
+  //       const recordingResult = String(reader.result);
+  //       const splitResult = recordingResult.split('base64,');
+  //       const toResolve = splitResult.length > 1 ? splitResult[1] : recordingResult;
+  //       resolve(toResolve.trim());
+  //     };
+  //     reader.readAsDataURL(blob);
+  //   });
+  // }
 
   private prepareInstanceForNextOperation(): void {
     if (this.mediaRecorder != null && this.mediaRecorder.state === 'recording') {
@@ -187,4 +197,27 @@ export class VoiceRecorderImpl {
     this.mediaRecorder = null;
     this.chunks = [];
   }
+}
+
+async function saveToIndexedDB(
+  blob: Blob,
+  // mimeType: string
+): Promise<string> {
+  const db = await openIDB();
+
+  const key: string = `audio-${Date.now()}.webm`;
+
+  await db.put(VoiceRecorderImpl.DB_STORE_NAME, blob, key);
+
+  // Return full IDB path format: idb://database/collection/id
+  return `idb://${VoiceRecorderImpl.DB_NAME}/${VoiceRecorderImpl.DB_STORE_NAME}/${key}`;
+}
+
+async function openIDB() {
+  const db = await openDB(VoiceRecorderImpl.DB_NAME, 1, {
+    upgrade(db) {
+      db.createObjectStore(VoiceRecorderImpl.DB_STORE_NAME);
+    },
+  });
+  return db;
 }

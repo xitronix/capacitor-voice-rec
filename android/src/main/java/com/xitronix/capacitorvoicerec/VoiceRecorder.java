@@ -92,7 +92,9 @@ public class VoiceRecorder extends Plugin {
             }
             mediaRecorder = new CustomMediaRecorder(getContext());
             mediaRecorder.startRecording();
-            call.resolve(ResponseGenerator.successResponse());
+
+            String filePath = mediaRecorder.getOutputFilePath();
+            call.resolve(ResponseGenerator.successResponse(filePath));
         } catch (Exception exp) {
             call.reject(Messages.FAILED_TO_RECORD, exp);
         }
@@ -108,12 +110,14 @@ public class VoiceRecorder extends Plugin {
         try {
             mediaRecorder.stopRecording();
             File recordedFile = mediaRecorder.getOutputFile();
+            String path = recordedFile.getAbsolutePath();
+
             RecordData recordData = new RecordData(
-                readRecordedFileAsBase64(recordedFile),
                 getMsDurationOfAudioFile(recordedFile.getAbsolutePath()),
-                "audio/aac"
+                "audio/aac",
+                path
             );
-            if (recordData.getRecordDataBase64() == null || recordData.getMsDuration() < 0) {
+            if (getMsDurationOfAudioFile(path) < 0) {
                 call.reject(Messages.EMPTY_RECORDING);
             } else {
                 call.resolve(ResponseGenerator.dataResponse(recordData.toJSObject()));
@@ -121,11 +125,9 @@ public class VoiceRecorder extends Plugin {
         } catch (Exception exp) {
             call.reject(Messages.FAILED_TO_FETCH_RECORDING, exp);
         } finally {
-            mediaRecorder.deleteOutputFile();
             mediaRecorder = null;
 
             if (useForegroundService) {
-                // Stop the foreground service
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     Intent serviceIntent = new Intent(getContext(), ForegroundService.class);
                     getContext().stopService(serviceIntent);
@@ -171,19 +173,6 @@ public class VoiceRecorder extends Plugin {
 
     private boolean doesUserGaveAudioRecordingPermission() {
         return getPermissionState(VoiceRecorder.RECORD_AUDIO_ALIAS).equals(PermissionState.GRANTED);
-    }
-
-    private String readRecordedFileAsBase64(File recordedFile) {
-        BufferedInputStream bufferedInputStream;
-        byte[] bArray = new byte[(int) recordedFile.length()];
-        try {
-            bufferedInputStream = new BufferedInputStream(new FileInputStream(recordedFile));
-            bufferedInputStream.read(bArray);
-            bufferedInputStream.close();
-        } catch (IOException exp) {
-            return null;
-        }
-        return Base64.encodeToString(bArray, Base64.DEFAULT);
     }
 
     private int getMsDurationOfAudioFile(String recordedFilePath) {

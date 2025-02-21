@@ -5,6 +5,10 @@ import android.media.MediaRecorder;
 import android.os.Build;
 import java.io.File;
 import java.io.IOException;
+import android.os.Environment;
+import android.util.Log;
+
+import java.util.UUID;
 
 public class CustomMediaRecorder {
 
@@ -30,9 +34,12 @@ public class CustomMediaRecorder {
     }
 
     private void setRecorderOutputFile() throws IOException {
-        File outputDir = context.getCacheDir();
-        outputFile = File.createTempFile("voice_record_temp", ".aac", outputDir);
-        outputFile.deleteOnExit();
+        File outputDir = context.getExternalFilesDir(Environment.DIRECTORY_MUSIC); // Persistent storage
+        if (outputDir != null && !outputDir.exists()) {
+            outputDir.mkdirs();
+        }
+        outputFile = new File(outputDir, "voice_record_" + UUID.randomUUID().toString() + ".aac");
+
         mediaRecorder.setOutputFile(outputFile.getAbsolutePath());
     }
 
@@ -49,6 +56,11 @@ public class CustomMediaRecorder {
 
     public File getOutputFile() {
         return outputFile;
+    }
+
+    public String getOutputFilePath() {
+        Log.w("ABS_PATH", "getOutputFilePath" + outputFile.getAbsolutePath() );
+        return outputFile != null ? outputFile.getAbsolutePath() : null;
     }
 
     public boolean pauseRecording() throws NotSupportedOsVersion {

@@ -140,7 +140,7 @@ VoiceRecorder.startRecording()
 
 /**
 * In case of success the promise will resolve to:
-* {"value": { recordDataBase64: string, msDuration: number, mimeType: string }},
+* {"value": { msDuration: number, mimeType: string, path: string }},
 * the file will be in one of several possible formats (more on that later).
 * in case of an error the promise will reject with one of the following messages:
 * "RECORDING_HAS_NOT_STARTED" or "FAILED_TO_FETCH_RECORDING"
