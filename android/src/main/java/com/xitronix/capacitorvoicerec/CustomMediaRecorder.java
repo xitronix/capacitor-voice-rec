@@ -17,30 +17,55 @@ public class CustomMediaRecorder {
     private File outputFile;
     private CurrentRecordingStatus currentRecordingStatus = CurrentRecordingStatus.NONE;
 
-    public CustomMediaRecorder(Context context) throws IOException {
+    public CustomMediaRecorder(Context context, String directory) throws IOException {
         this.context = context;
-        generateMediaRecorder();
+        generateMediaRecorder(directory);
     }
 
-    private void generateMediaRecorder() throws IOException {
+    private void generateMediaRecorder(String directory) throws IOException {
         mediaRecorder = new MediaRecorder();
         mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
         mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.AAC_ADTS);
         mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
         mediaRecorder.setAudioEncodingBitRate(96000);
         mediaRecorder.setAudioSamplingRate(44100);
-        setRecorderOutputFile();
+
+        outputFile = getFileObject("voice_record_" + UUID.randomUUID().toString() + ".aac", directory);
+        
+        mediaRecorder.setOutputFile(outputFile.getAbsolutePath());
         mediaRecorder.prepare();
     }
 
-    private void setRecorderOutputFile() throws IOException {
+    public File getDirectory(String directory) {
+        switch (directory) {
+            case "TEMPORARY":
+            case "CACHE":
+                return this.context.getCacheDir();
+            default:
+                return context.getFilesDir(); // Persistent storage
+        }
+
+    }
+
+    public File getFileObject(String path, String directory) {
+
+        File androidDirectory = this.getDirectory(directory);
         File outputDir = context.getExternalFilesDir(Environment.DIRECTORY_MUSIC); // Persistent storage
         if (outputDir != null && !outputDir.exists()) {
             outputDir.mkdirs();
         }
-        outputFile = new File(outputDir, "voice_record_" + UUID.randomUUID().toString() + ".aac");
+        outputFile = new File(outputDir, "voice_recording_" + UUID.randomUUID().toString() + ".aac");
 
-        mediaRecorder.setOutputFile(outputFile.getAbsolutePath());
+
+        if (androidDirectory == null) {
+            return null;
+        } else {
+            if (!androidDirectory.exists()) {
+                androidDirectory.mkdir();
+            }
+        }
+
+        return new File(androidDirectory, path);
     }
 
     public void startRecording() {
@@ -106,7 +131,7 @@ public class CustomMediaRecorder {
     private static boolean canPhoneCreateMediaRecorderWhileHavingPermission(Context context) {
         CustomMediaRecorder tempMediaRecorder = null;
         try {
-            tempMediaRecorder = new CustomMediaRecorder(context);
+            tempMediaRecorder = new CustomMediaRecorder(context, "CACHE");
             tempMediaRecorder.startRecording();
             tempMediaRecorder.stopRecording();
             return true;
@@ -116,4 +141,15 @@ public class CustomMediaRecorder {
             if (tempMediaRecorder != null) tempMediaRecorder.deleteOutputFile();
         }
     }
+
+    
+//
+//    /**
+//     * Checks the the given permission is granted or not
+//     * @return Returns true if the app is running on Android 30 or newer or if the permission is already granted
+//     * or false if it is denied.
+//     */
+//    private boolean isStoragePermissionGranted() {
+//        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.R || getPermissionState(PUBLIC_STORAGE) == PermissionState.GRANTED;
+//    }
 }

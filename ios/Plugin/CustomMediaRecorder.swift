@@ -15,13 +15,39 @@ class CustomMediaRecorder:NSObject {
         AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
     ]
     
-    private func getDirectoryToSaveAudioFile() -> URL {
-//        return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        return (FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)).last!
-
+   /**
+     * Get the directory URL corresponding to the JS string
+     */
+    public func getDirectory(directory: String? = nil) -> URL {
+        let fileManager = FileManager.default
+        
+        switch directory {
+        case "TEMPORARY":
+            return fileManager.temporaryDirectory
+        case "CACHE":
+            return fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first!
+        default:
+            return fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
+        }
     }
-    
-    public func startRecording() -> Bool {
+
+    /**
+     * Get the URL for a given file, ensuring proper path handling.
+     */
+    public func getFileUrl(at fileName: String, in directory: String?) -> URL {
+        NSLog("Debug: My log message start")
+        print(getDirectory(directory: "CACHE").absoluteString)
+        print(directory ?? "nil");
+        NSLog(getDirectory(directory: "CACHE").absoluteString)
+        NSLog(directory ?? "nil");
+
+        NSLog("Debug: My log message end")
+
+        let dirUrl = getDirectory(directory: directory)
+        return dirUrl.appendingPathComponent(fileName)
+    }
+
+    public func startRecording(directory: String?) -> Bool {
         NotificationCenter.default.addObserver(self,
                                                 selector: #selector(handleInterruption),
                                                 name: AVAudioSession.interruptionNotification,
@@ -32,7 +58,11 @@ class CustomMediaRecorder:NSObject {
             try recordingSession.setCategory(AVAudioSession.Category.playAndRecord, options: .mixWithOthers)
             try recordingSession.setActive(true)
             // TODO: set audio file path
-            audioFilePath = getDirectoryToSaveAudioFile().appendingPathComponent("\(UUID().uuidString).aac")
+
+            audioFilePath = getFileUrl(
+                at: "\(UUID().uuidString).aac",
+                in: directory
+            )
             audioRecorder = try AVAudioRecorder(url: audioFilePath, settings: settings)
             audioRecorder.record()
             status = CurrentRecordingStatus.RECORDING
@@ -87,19 +117,14 @@ class CustomMediaRecorder:NSObject {
         return status
     }
     
-    public func deleteRecording() {
-        let fileManager = FileManager.default
-           
+
+    public func removeRecording(fileUrl: URL) {
         do {
-            // Check if the file exists before attempting to delete
-            if fileManager.fileExists(atPath: audioFilePath.path) {
-                try fileManager.removeItem(at: audioFilePath)
-                print("Deleted: \(audioFilePath.lastPathComponent)")
-            } else {
-                print("File does not exist at path: \(audioFilePath.path)")
+            if FileManager.default.fileExists(atPath: fileUrl.path) {
+                try FileManager.default.removeItem(atPath: fileUrl.path)
             }
-        } catch {
-            print("Error deleting file at \(audioFilePath.path): \(error)")
+        } catch let error {
+            print("Error while removing file: \(error.localizedDescription)")
         }
     }
     

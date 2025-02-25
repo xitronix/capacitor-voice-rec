@@ -28,6 +28,7 @@ public class VoiceRecorder extends Plugin {
     static final String RECORD_AUDIO_ALIAS = "voice recording";
     private CustomMediaRecorder mediaRecorder;
     private boolean useForegroundService = false;
+    private String directory = "DOCUMENTS";
 
     @PluginMethod
     public void canDeviceVoiceRecord(PluginCall call) {
@@ -79,6 +80,9 @@ public class VoiceRecorder extends Plugin {
             return;
         }
 
+
+        directory = call.getString("directory", "DOCUMENTS");
+
         useForegroundService = Boolean.TRUE.equals(call.getBoolean("useForegroundService", false));
         try {
             if (useForegroundService) {
@@ -90,7 +94,7 @@ public class VoiceRecorder extends Plugin {
                     getContext().startForegroundService(serviceIntent);
                 }
             }
-            mediaRecorder = new CustomMediaRecorder(getContext());
+            mediaRecorder = new CustomMediaRecorder(getContext(), directory);
             mediaRecorder.startRecording();
 
             String filePath = mediaRecorder.getOutputFilePath();
@@ -191,4 +195,24 @@ public class VoiceRecorder extends Plugin {
         if (audioManager == null) return true;
         return audioManager.getMode() != AudioManager.MODE_NORMAL;
     }
+
+    // @PluginMethod
+    // public void deleteFile(PluginCall call) {
+    //     String file = call.getString("path");
+    //     String directory = getDirectoryParameter(call);
+    //     if (isPublicDirectory(directory) && !isStoragePermissionGranted()) {
+    //         requestAllPermissions(call, "permissionCallback");
+    //     } else {
+    //         try {
+    //             boolean deleted = implementation.deleteFile(file, directory);
+    //             if (!deleted) {
+    //                 call.reject("Unable to delete file");
+    //             } else {
+    //                 call.resolve();
+    //             }
+    //         } catch (FileNotFoundException ex) {
+    //             call.reject(ex.getMessage());
+    //         }
+    //     }
+    // }
 }

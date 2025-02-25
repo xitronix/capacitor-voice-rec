@@ -43,7 +43,9 @@ public class VoiceRecorder: CAPPlugin {
             return
         }
         
-        let successfullyStartedRecording = customMediaRecorder!.startRecording()
+        let directory = call.getString("directory")
+        let successfullyStartedRecording = customMediaRecorder!.startRecording(directory: directory)
+
         if successfullyStartedRecording == false {
             call.reject(Messages.CANNOT_RECORD_ON_THIS_PHONE)
         } else {
@@ -136,6 +138,21 @@ public class VoiceRecorder: CAPPlugin {
     public func getAudioFile() -> URL? {
         return audioFilePath
     }
+
+    // public removeRecording(_ call: CAPPluginCall) {
+    //      guard let file = call.getString("path") else {
+    //         handleError(call, "path must be provided and must be a string.")
+    //         return
+    //     }
+
+    //     let directory = call.getString("directory")
+    //     guard let fileUrl = customMediaRecorder.getFileUrl(at: file, in: directory) else {
+    //         call.reject(ResponseGenerator.failResponse());
+    //         return
+    //     }
+
+    //     customMediaRecorder.deleteRecording(fileUrl)
+    // }
 }
 
 
