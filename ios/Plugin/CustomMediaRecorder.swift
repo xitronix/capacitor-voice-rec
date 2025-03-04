@@ -47,10 +47,16 @@ class CustomMediaRecorder:NSObject {
         do {
             recordingSession = AVAudioSession.sharedInstance()
             originalRecordingSessionCategory = recordingSession.category
-            try recordingSession.setCategory(AVAudioSession.Category.playAndRecord, options: .mixWithOthers)
-            try recordingSession.setActive(true)
-            // TODO: set audio file path
-
+            
+            // Configure audio session with highest priority and no mixing
+            try recordingSession.setCategory(.playAndRecord, 
+                                          mode: .default,
+                                          options: [.allowBluetooth]) // Removed .defaultToSpeaker and don't use .mixWithOthers
+            try recordingSession.setActive(true, options: .notifyOthersOnDeactivation)
+            if #available(iOS 14.5, *) {
+                try recordingSession.setPrefersNoInterruptionsFromSystemAlerts(true)
+            }
+            
             audioFilePath = getFileUrl(
                 at: "\(UUID().uuidString).aac",
                 in: directory
@@ -92,12 +98,13 @@ class CustomMediaRecorder:NSObject {
     
     public func resumeRecording() -> Bool {
         if(status == CurrentRecordingStatus.PAUSED) {
-            do{
-                try recordingSession.setActive(true)
-                audioRecorder.record()
+            do {
+                try recordingSession.setActive(true, options: .notifyOthersOnDeactivation)
+                audioRecorder.record() // It will continue from where it was paused
                 status = CurrentRecordingStatus.RECORDING
                 return true
-            }catch{
+            } catch {
+                print("Failed to resume recording: \(error)")
                 return false
             }
         } else {
@@ -125,23 +132,32 @@ class CustomMediaRecorder:NSObject {
 extension CustomMediaRecorder:AVAudioRecorderDelegate {
     @objc func handleInterruption(notification: Notification) {
         print("CUSTOM RECORDER \(#function)")
-           guard let userInfo = notification.userInfo,
-                 let interruptionTypeRawValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-                 let interruptionType = AVAudioSession.InterruptionType(rawValue: interruptionTypeRawValue) else {
-               return
-           }
+        guard let userInfo = notification.userInfo,
+              let interruptionTypeRawValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let interruptionType = AVAudioSession.InterruptionType(rawValue: interruptionTypeRawValue) else {
+            return
+        }
 
-           switch interruptionType {
-           case .began:
-               let _ = pauseRecording()
-           case .ended:
-               guard let optionsRawValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
-               let options = AVAudioSession.InterruptionOptions(rawValue: optionsRawValue)
-               if options.contains(.shouldResume) {
-                   let _ = resumeRecording()
-               }
-           @unknown default:
-               break
-           }
-       }
+        switch interruptionType {
+        case .began:
+            // When interruption begins, pause recording and deactivate session
+            let _ = pauseRecording()
+            try? recordingSession.setActive(false, options: .notifyOthersOnDeactivation)
+            
+        case .ended:
+            guard let optionsRawValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
+            let options = AVAudioSession.InterruptionOptions(rawValue: optionsRawValue)
+            
+            // Only attempt to resume if the system indicates it's safe to do so
+            if options.contains(.shouldResume) {
+                // We can directly call resumeRecording since it handles setActive
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    let _ = self.resumeRecording()
+                }
+            }
+            
+        @unknown default:
+            break
+        }
+    }
 }
