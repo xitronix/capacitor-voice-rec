@@ -35,14 +35,6 @@ class CustomMediaRecorder:NSObject {
      * Get the URL for a given file, ensuring proper path handling.
      */
     public func getFileUrl(at fileName: String, in directory: String?) -> URL {
-        NSLog("Debug: My log message start")
-        print(getDirectory(directory: "CACHE").absoluteString)
-        print(directory ?? "nil");
-        NSLog(getDirectory(directory: "CACHE").absoluteString)
-        NSLog(directory ?? "nil");
-
-        NSLog("Debug: My log message end")
-
         let dirUrl = getDirectory(directory: directory)
         return dirUrl.appendingPathComponent(fileName)
     }

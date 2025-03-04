@@ -95,10 +95,13 @@ public class VoiceRecorder extends Plugin {
                 }
             }
             mediaRecorder = new CustomMediaRecorder(getContext(), directory);
-            mediaRecorder.startRecording();
-
-            String filePath = mediaRecorder.getOutputFilePath();
-            call.resolve(ResponseGenerator.successResponse(filePath));
+            String filePath = mediaRecorder.startRecording();
+            RecordData recordData = new RecordData(
+                -1, // duration not available at start
+                "audio/aac",
+                filePath
+            );
+            call.resolve(ResponseGenerator.dataResponse(recordData.toJSObject()));
         } catch (Exception exp) {
             call.reject(Messages.FAILED_TO_RECORD, exp);
         }

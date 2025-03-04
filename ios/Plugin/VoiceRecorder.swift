@@ -50,7 +50,12 @@ public class VoiceRecorder: CAPPlugin {
             call.reject(Messages.CANNOT_RECORD_ON_THIS_PHONE)
         } else {
             audioFilePath = customMediaRecorder?.getOutputFile()
-            call.resolve(["filePath": audioFilePath?.absoluteString ?? ""])
+            let recordData = RecordData(
+                mimeType: "audio/aac",
+                msDuration: -1,
+                filePath: audioFilePath?.absoluteString ?? ""
+            )
+            call.resolve(ResponseGenerator.dataResponse(recordData.toDictionary()))
         }
     }
 

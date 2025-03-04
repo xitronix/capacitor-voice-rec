@@ -71,6 +71,7 @@ public class CustomMediaRecorder {
     public void startRecording() {
         mediaRecorder.start();
         currentRecordingStatus = CurrentRecordingStatus.RECORDING;
+        return getOutputFilePath();
     }
 
     public void stopRecording() {

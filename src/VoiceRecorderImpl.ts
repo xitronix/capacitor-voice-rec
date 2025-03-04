@@ -37,7 +37,7 @@ export class VoiceRecorderImpl {
     }
   }
 
-  public async startRecording(): Promise<GenericResponse> {
+  public async startRecording(): Promise<RecordingData> {
     if (this.mediaRecorder != null) {
       throw alreadyRecordingError();
     }
@@ -132,43 +132,58 @@ export class VoiceRecorderImpl {
     return foundSupportedType ?? null;
   }
 
-  private onSuccessfullyStartedRecording(stream: MediaStream): GenericResponse {
+  private onSuccessfullyStartedRecording(stream: MediaStream): RecordingData {
+    const mimeType = VoiceRecorderImpl.getSupportedMimeType();
+    if (mimeType == null) {
+      this.prepareInstanceForNextOperation();
+      throw failedToFetchRecordingError();
+    }
+
+    // Generate the final path that will be used for storage
+    const fileName = `audio-${Date.now()}.webm`;
+    const finalPath = `idb://${VoiceRecorderImpl.DB_NAME}/${VoiceRecorderImpl.DB_STORE_NAME}/${fileName}`;
+    
     this.pendingResult = new Promise((resolve, reject) => {
-      this.mediaRecorder = new MediaRecorder(stream);
+      try {
+        this.mediaRecorder = new MediaRecorder(stream);
+      } catch (error) {
+        this.prepareInstanceForNextOperation();
+        reject(failedToRecordError());
+        return;
+      }
+
       this.mediaRecorder.onerror = () => {
         this.prepareInstanceForNextOperation();
         reject(failedToRecordError());
       };
       this.mediaRecorder.onstop = async () => {
-        const mimeType = VoiceRecorderImpl.getSupportedMimeType();
-        if (mimeType == null) {
-          this.prepareInstanceForNextOperation();
-          reject(failedToFetchRecordingError());
-          return;
-        }
         const blobVoiceRecording = new Blob(this.chunks, { type: mimeType });
         if (blobVoiceRecording.size <= 0) {
           this.prepareInstanceForNextOperation();
           reject(emptyRecordingError());
           return;
         }
-        // TODO: return uri
-        // const recordDataBase64 = await VoiceRecorderImpl.blobToBase64(blobVoiceRecording);
-        // todo save blob to filesystem
         const recordingDuration = await getBlobDuration(blobVoiceRecording);
         this.prepareInstanceForNextOperation();
-        // TODO: Handle path on WEB
-        const filePath = await saveToIndexedDB(blobVoiceRecording);
-
+        
+        // Save to IndexedDB using the same path we returned earlier
+        const filePath = await saveToIndexedDB(blobVoiceRecording, fileName);
         resolve({ value: { mimeType, msDuration: recordingDuration * 1000, filePath } });
       };
       this.mediaRecorder.ondataavailable = (event: BlobEvent) => this.chunks.push(event.data);
       this.mediaRecorder.start();
     });
-    return successResponse();
+
+    return {
+      value: {
+        mimeType,
+        msDuration: -1,
+        filePath: finalPath
+      }
+    };
   }
 
-  private onFailedToStartRecording(): GenericResponse {
+  private onFailedToStartRecording(): never {
     this.prepareInstanceForNextOperation();
     throw failedToRecordError();
   }
@@ -201,16 +216,11 @@ export class VoiceRecorderImpl {
 
 async function saveToIndexedDB(
   blob: Blob,
-  // mimeType: string
+  fileName: string,
 ): Promise<string> {
   const db = await openIDB();
-
-  const key: string = `audio-${Date.now()}.webm`;
-
-  await db.put(VoiceRecorderImpl.DB_STORE_NAME, blob, key);
-
-  // Return full IDB path format: idb://database/collection/id
-  return `idb://${VoiceRecorderImpl.DB_NAME}/${VoiceRecorderImpl.DB_STORE_NAME}/${key}`;
+  await db.put(VoiceRecorderImpl.DB_STORE_NAME, blob, fileName);
+  return `idb://${VoiceRecorderImpl.DB_NAME}/${VoiceRecorderImpl.DB_STORE_NAME}/${fileName}`;
 }
 
 async function openIDB() {
