@@ -68,7 +68,7 @@ public class CustomMediaRecorder {
         return new File(androidDirectory, path);
     }
 
-    public void startRecording() {
+    public String startRecording() {
         mediaRecorder.start();
         currentRecordingStatus = CurrentRecordingStatus.RECORDING;
         return getOutputFilePath();

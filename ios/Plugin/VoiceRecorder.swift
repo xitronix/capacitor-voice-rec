@@ -53,7 +53,7 @@ public class VoiceRecorder: CAPPlugin {
             let recordData = RecordData(
                 mimeType: "audio/aac",
                 msDuration: -1,
-                filePath: audioFilePath?.absoluteString ?? ""
+                filePath: audioFilePath!.absoluteString
             )
             call.resolve(ResponseGenerator.dataResponse(recordData.toDictionary()))
         }
@@ -84,7 +84,6 @@ public class VoiceRecorder: CAPPlugin {
             call.reject(Messages.EMPTY_RECORDING)
         } else {
             call.resolve(ResponseGenerator.dataResponse(recordData.toDictionary()))
-            // customMediaRecorder?.deleteRecording()
         }
         customMediaRecorder = nil
     }
