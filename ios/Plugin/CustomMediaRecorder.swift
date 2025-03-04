@@ -40,22 +40,39 @@ class CustomMediaRecorder:NSObject {
     }
 
     public func startRecording(directory: String?) -> Bool {
+        // Set up all possible interruption observers
         NotificationCenter.default.addObserver(self,
-                                                selector: #selector(handleInterruption),
-                                                name: AVAudioSession.interruptionNotification,
-                                                object: AVAudioSession.sharedInstance())
+                                             selector: #selector(handleInterruption),
+                                             name: AVAudioSession.interruptionNotification,
+                                             object: AVAudioSession.sharedInstance())
+        NotificationCenter.default.addObserver(self,
+                                             selector: #selector(handleRouteChange),
+                                             name: AVAudioSession.routeChangeNotification,
+                                             object: AVAudioSession.sharedInstance())
+        NotificationCenter.default.addObserver(self,
+                                             selector: #selector(handleSecondaryAudio),
+                                             name: AVAudioSession.silenceSecondaryAudioHintNotification,
+                                             object: AVAudioSession.sharedInstance())
+        NotificationCenter.default.addObserver(self,
+                                             selector: #selector(handleMediaServicesReset),
+                                             name: AVAudioSession.mediaServicesWereResetNotification,
+                                             object: AVAudioSession.sharedInstance())
+        
         do {
             recordingSession = AVAudioSession.sharedInstance()
             originalRecordingSessionCategory = recordingSession.category
             
-            // Configure audio session with highest priority and no mixing
+            // Configure for highest priority recording
             try recordingSession.setCategory(.playAndRecord, 
-                                          mode: .default,
-                                          options: [.allowBluetooth]) // Removed .defaultToSpeaker and don't use .mixWithOthers
+                                           mode: .default,
+                                           options: [.allowBluetooth, .duckOthers])  // Added .duckOthers
             try recordingSession.setActive(true, options: .notifyOthersOnDeactivation)
             if #available(iOS 14.5, *) {
                 try recordingSession.setPrefersNoInterruptionsFromSystemAlerts(true)
             }
+            
+            // Set audio session priority to high
+            try AVAudioSession.sharedInstance().setPreferredIOBufferDuration(0.005)
             
             audioFilePath = getFileUrl(
                 at: "\(UUID().uuidString).aac",
@@ -131,33 +148,76 @@ class CustomMediaRecorder:NSObject {
 
 extension CustomMediaRecorder:AVAudioRecorderDelegate {
     @objc func handleInterruption(notification: Notification) {
-        print("CUSTOM RECORDER \(#function)")
         guard let userInfo = notification.userInfo,
-              let interruptionTypeRawValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let interruptionType = AVAudioSession.InterruptionType(rawValue: interruptionTypeRawValue) else {
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
             return
         }
 
-        switch interruptionType {
+        switch type {
         case .began:
-            // When interruption begins, pause recording and deactivate session
             let _ = pauseRecording()
-            try? recordingSession.setActive(false, options: .notifyOthersOnDeactivation)
-            
         case .ended:
-            guard let optionsRawValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
-            let options = AVAudioSession.InterruptionOptions(rawValue: optionsRawValue)
-            
-            // Only attempt to resume if the system indicates it's safe to do so
+            guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
+            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
             if options.contains(.shouldResume) {
-                // We can directly call resumeRecording since it handles setActive
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    let _ = self.resumeRecording()
-                }
+                tryResumeRecording()
             }
-            
         @unknown default:
             break
+        }
+    }
+
+    @objc func handleRouteChange(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
+            return
+        }
+
+        switch reason {
+        case .categoryChange, .override, .oldDeviceUnavailable:
+            let _ = pauseRecording()
+            // Try to resume if conditions allow
+            tryResumeRecording()
+        default:
+            break
+        }
+    }
+
+    @objc func handleSecondaryAudio(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionSilenceSecondaryAudioHintTypeKey] as? UInt,
+              let type = AVAudioSession.SilenceSecondaryAudioHintType(rawValue: typeValue) else {
+            return
+        }
+        
+        switch type {
+        case .begin:
+            let _ = pauseRecording()
+        case .end:
+            tryResumeRecording()
+        @unknown default:
+            break
+        }
+    }
+
+    @objc func handleMediaServicesReset(notification: Notification) {
+        tryResumeRecording()
+    }
+
+    // Helper to check if we can record
+    private func canRecord() -> Bool {
+        guard let session = recordingSession else { return false }
+        return session.isInputAvailable && session.recordPermission == .granted
+    }
+
+    // Helper to attempt resuming recording
+    private func tryResumeRecording() {
+        if status == .PAUSED && canRecord() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                let _ = self.resumeRecording()
+            }
         }
     }
 }
