@@ -65,7 +65,7 @@ class CustomMediaRecorder:NSObject {
             // Configure for highest priority recording
             try recordingSession.setCategory(.playAndRecord, 
                                            mode: .default,
-                                           options: [.allowBluetooth, .duckOthers])  // Added .duckOthers
+                                           options: [.allowBluetooth, .duckOthers, .defaultToSpeaker, .mixWithOthers])
             try recordingSession.setActive(true, options: .notifyOthersOnDeactivation)
             if #available(iOS 14.5, *) {
                 try recordingSession.setPrefersNoInterruptionsFromSystemAlerts(true)
