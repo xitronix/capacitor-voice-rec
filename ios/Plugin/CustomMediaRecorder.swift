@@ -143,6 +143,10 @@ class CustomMediaRecorder:NSObject {
             print("Error while removing file: \(error.localizedDescription)")
         }
     }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
     
 }
 
@@ -158,11 +162,7 @@ extension CustomMediaRecorder:AVAudioRecorderDelegate {
         case .began:
             let _ = pauseRecording()
         case .ended:
-            guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
-            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-            if options.contains(.shouldResume) {
-                tryResumeRecording()
-            }
+            tryResumeRecording()
         @unknown default:
             break
         }
@@ -176,10 +176,8 @@ extension CustomMediaRecorder:AVAudioRecorderDelegate {
         }
 
         switch reason {
-        case .categoryChange, .override, .oldDeviceUnavailable:
+        case .override, .oldDeviceUnavailable:
             let _ = pauseRecording()
-            // Try to resume if conditions allow
-            tryResumeRecording()
         default:
             break
         }
@@ -213,10 +211,14 @@ extension CustomMediaRecorder:AVAudioRecorderDelegate {
     }
 
     // Helper to attempt resuming recording
-    private func tryResumeRecording() {
+    private func tryResumeRecording(attempt: Int = 1) {
         if status == .PAUSED && canRecord() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                let _ = self.resumeRecording()
+                let isResumed = resumeRecording()
+                if attempt < 3 && !isResumed {
+                    let delay = pow(2.0, Double(attempt)) * 0.5  
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    self.tryResumeRecording(attempt: attempt + 1)
+                }   
             }
         }
     }
