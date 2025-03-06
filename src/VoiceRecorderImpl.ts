@@ -51,7 +51,14 @@ export class VoiceRecorderImpl {
     }
 
     return navigator.mediaDevices
-      .getUserMedia({ audio: true })
+      .getUserMedia({
+        audio: {
+          echoCancellation: false,
+          autoGainControl: false,
+          noiseSuppression: false,
+          channelCount: 2,
+        },
+      })
       .then(this.onSuccessfullyStartedRecording.bind(this))
       .catch(this.onFailedToStartRecording.bind(this));
   }
@@ -142,7 +149,7 @@ export class VoiceRecorderImpl {
     // Generate the final path that will be used for storage
     const fileName = `audio-${Date.now()}.webm`;
     const finalPath = `idb://${VoiceRecorderImpl.DB_NAME}/${VoiceRecorderImpl.DB_STORE_NAME}/${fileName}`;
-    
+
     this.pendingResult = new Promise((resolve, reject) => {
       try {
         this.mediaRecorder = new MediaRecorder(stream);
@@ -165,7 +172,7 @@ export class VoiceRecorderImpl {
         }
         const recordingDuration = await getBlobDuration(blobVoiceRecording);
         this.prepareInstanceForNextOperation();
-        
+
         // Save to IndexedDB using the same path we returned earlier
         const filePath = await saveToIndexedDB(blobVoiceRecording, fileName);
         resolve({ value: { mimeType, msDuration: recordingDuration * 1000, filePath } });
@@ -178,8 +185,8 @@ export class VoiceRecorderImpl {
       value: {
         mimeType,
         msDuration: -1,
-        filePath: finalPath
-      }
+        filePath: finalPath,
+      },
     };
   }
 
@@ -214,10 +221,7 @@ export class VoiceRecorderImpl {
   }
 }
 
-async function saveToIndexedDB(
-  blob: Blob,
-  fileName: string,
-): Promise<string> {
+async function saveToIndexedDB(blob: Blob, fileName: string): Promise<string> {
   const db = await openIDB();
   await db.put(VoiceRecorderImpl.DB_STORE_NAME, blob, fileName);
   return `idb://${VoiceRecorderImpl.DB_NAME}/${VoiceRecorderImpl.DB_STORE_NAME}/${fileName}`;
