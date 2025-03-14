@@ -12,6 +12,7 @@ import {
   failedToFetchRecordingError,
   failedToRecordError,
   failureResponse,
+  microphoneBeingUsedError,
   missingPermissionError,
   recordingHasNotStartedError,
   successResponse,
@@ -190,8 +191,16 @@ export class VoiceRecorderImpl {
     };
   }
 
-  private onFailedToStartRecording(): never {
+  private onFailedToStartRecording(error: Error): never {
     this.prepareInstanceForNextOperation();
+    
+    // Check if the error is related to the microphone being in use
+    if (error.name === 'NotReadableError' || 
+        error.message.includes('The hardware is in use') || 
+        error.message.includes('Could not start audio source')) {
+      throw microphoneBeingUsedError();
+    }
+    
     throw failedToRecordError();
   }
 

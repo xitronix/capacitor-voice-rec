@@ -78,28 +78,52 @@ class CustomMediaRecorder:NSObject {
                 at: "\(UUID().uuidString).aac",
                 in: directory
             )
+            
+            // Check if microphone is available
+            guard recordingSession.isInputAvailable else {
+                cleanup()
+                return false
+            }
+            
             audioRecorder = try AVAudioRecorder(url: audioFilePath, settings: settings)
-            audioRecorder.record()
+            audioRecorder.delegate = self
+            
+            if !audioRecorder.record() {
+                cleanup()
+                return false
+            }
+            
             status = CurrentRecordingStatus.RECORDING
             return true
         } catch {
+            cleanup()
             return false
         }
     }
     
-    public func stopRecording() {
+    private func cleanup() {
         do {
-            audioRecorder.stop()
-            try recordingSession.setActive(false)
-            try recordingSession.setCategory(originalRecordingSessionCategory)
+            if let recorder = audioRecorder {
+                recorder.stop()
+                audioRecorder = nil
+            }
+            if let session = recordingSession {
+                try session.setActive(false)
+                try session.setCategory(originalRecordingSessionCategory ?? .playAndRecord)
+                recordingSession = nil
+            }
             originalRecordingSessionCategory = nil
-            audioRecorder = nil
-            recordingSession = nil
             status = CurrentRecordingStatus.NONE
-        } catch {}
+        } catch {
+            print("Error during cleanup: \(error)")
+        }
     }
     
-    public func getOutputFile() -> URL {
+    public func stopRecording() {
+        cleanup()
+    }
+    
+    public func getOutputFile() -> URL? {
         return audioFilePath
     }
     

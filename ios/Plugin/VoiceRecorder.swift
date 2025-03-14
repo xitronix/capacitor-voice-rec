@@ -47,16 +47,25 @@ public class VoiceRecorder: CAPPlugin {
         let successfullyStartedRecording = customMediaRecorder!.startRecording(directory: directory)
 
         if successfullyStartedRecording == false {
+            customMediaRecorder = nil
             call.reject(Messages.CANNOT_RECORD_ON_THIS_PHONE)
-        } else {
-            audioFilePath = customMediaRecorder?.getOutputFile()
-            let recordData = RecordData(
-                mimeType: "audio/aac",
-                msDuration: -1,
-                filePath: audioFilePath!.absoluteString
-            )
-            call.resolve(ResponseGenerator.dataResponse(recordData.toDictionary()))
+            return
         }
+        
+        audioFilePath = customMediaRecorder?.getOutputFile()
+        if audioFilePath == nil {
+            customMediaRecorder?.stopRecording()
+            customMediaRecorder = nil
+            call.reject(Messages.FAILED_TO_FETCH_RECORDING)
+            return
+        }
+        
+        let recordData = RecordData(
+            mimeType: "audio/aac",
+            msDuration: -1,
+            filePath: audioFilePath!.absoluteString
+        )
+        call.resolve(ResponseGenerator.dataResponse(recordData.toDictionary()))
     }
 
     @objc public func stopRecording(_ call: CAPPluginCall) {
