@@ -1,3 +1,5 @@
+import type { PluginListenerHandle } from '@capacitor/core';
+
 export type Base64String = string;
 
 export interface RecordingData {
@@ -17,6 +19,13 @@ export interface CurrentRecordingStatus {
 }
 
 export interface VoiceRecorderPlugin {
+  addListener(
+    eventName: 'recordingStateChange',
+    listenerFunc: (status: CurrentRecordingStatus) => void,
+  ): Promise<PluginListenerHandle>;
+
+  removeAllListeners(): Promise<void>;
+
   canDeviceVoiceRecord(): Promise<GenericResponse>;
 
   requestAudioRecordingPermission(): Promise<GenericResponse>;

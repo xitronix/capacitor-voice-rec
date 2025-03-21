@@ -18,6 +18,7 @@ import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import com.getcapacitor.JSObject;
 
 @CapacitorPlugin(
     name = "VoiceRecorder",
@@ -80,7 +81,6 @@ public class VoiceRecorder extends Plugin {
             return;
         }
 
-
         directory = call.getString("directory", "DOCUMENTS");
 
         useForegroundService = Boolean.TRUE.equals(call.getBoolean("useForegroundService", false));
@@ -96,6 +96,7 @@ public class VoiceRecorder extends Plugin {
             }
             mediaRecorder = new CustomMediaRecorder(getContext(), directory);
             String filePath = mediaRecorder.startRecording();
+            notifyRecordingStateChange(CurrentRecordingStatus.RECORDING);
             RecordData recordData = new RecordData(
                 -1, // duration not available at start
                 "audio/aac",
@@ -109,37 +110,37 @@ public class VoiceRecorder extends Plugin {
 
     @PluginMethod
     public void stopRecording(PluginCall call) {
-        if (mediaRecorder == null) {
-            call.reject(Messages.RECORDING_HAS_NOT_STARTED);
-            return;
-        }
-
         try {
-            mediaRecorder.stopRecording();
-            File recordedFile = mediaRecorder.getOutputFile();
-            String path = recordedFile.getAbsolutePath();
+            if (mediaRecorder == null) {
+                call.reject(Messages.NOT_RECORDING);
+                return;
+            }
 
+            String recordedFilePath = mediaRecorder.getOutputFilePath();
+            mediaRecorder.stopRecording();
+            notifyRecordingStateChange(CurrentRecordingStatus.NONE);
+
+            if (useForegroundService) {
+                getContext().stopService(new Intent(getContext(), ForegroundService.class));
+            }
+
+            File recordedFile = new File(recordedFilePath);
+            if (!recordedFile.exists()) {
+                call.reject(Messages.FILE_DOES_NOT_EXIST);
+                return;
+            }
+
+            String path = recordedFile.getAbsolutePath();
             RecordData recordData = new RecordData(
-                getMsDurationOfAudioFile(recordedFile.getAbsolutePath()),
+                getMsDurationOfAudioFile(path),
                 "audio/aac",
                 path
             );
-            if (getMsDurationOfAudioFile(path) < 0) {
-                call.reject(Messages.EMPTY_RECORDING);
-            } else {
-                call.resolve(ResponseGenerator.dataResponse(recordData.toJSObject()));
-            }
-        } catch (Exception exp) {
-            call.reject(Messages.FAILED_TO_FETCH_RECORDING, exp);
-        } finally {
-            mediaRecorder = null;
 
-            if (useForegroundService) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    Intent serviceIntent = new Intent(getContext(), ForegroundService.class);
-                    getContext().stopService(serviceIntent);
-                }
-            }
+            mediaRecorder = null;
+            call.resolve(recordData.toJSObject());
+        } catch (Exception exception) {
+            call.reject(Messages.RECORDING_FAILED, exception);
         }
     }
 
@@ -150,7 +151,9 @@ public class VoiceRecorder extends Plugin {
             return;
         }
         try {
-            call.resolve(ResponseGenerator.fromBoolean(mediaRecorder.pauseRecording()));
+            mediaRecorder.pauseRecording();
+            notifyRecordingStateChange(CurrentRecordingStatus.PAUSED);
+            call.resolve(ResponseGenerator.successResponse());
         } catch (NotSupportedOsVersion exception) {
             call.reject(Messages.NOT_SUPPORTED_OS_VERSION);
         }
@@ -163,7 +166,9 @@ public class VoiceRecorder extends Plugin {
             return;
         }
         try {
-            call.resolve(ResponseGenerator.fromBoolean(mediaRecorder.resumeRecording()));
+            mediaRecorder.resumeRecording();
+            notifyRecordingStateChange(CurrentRecordingStatus.RECORDING);
+            call.resolve(ResponseGenerator.successResponse());
         } catch (NotSupportedOsVersion exception) {
             call.reject(Messages.NOT_SUPPORTED_OS_VERSION);
         }
@@ -197,6 +202,12 @@ public class VoiceRecorder extends Plugin {
         AudioManager audioManager = (AudioManager) this.getContext().getSystemService(Context.AUDIO_SERVICE);
         if (audioManager == null) return true;
         return audioManager.getMode() != AudioManager.MODE_NORMAL;
+    }
+
+    private void notifyRecordingStateChange(CurrentRecordingStatus status) {
+        JSObject ret = new JSObject();
+        ret.put("status", status.toString());
+        notifyListeners("recordingStateChange", ret);
     }
 
     // @PluginMethod
