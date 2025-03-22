@@ -41,6 +41,7 @@ public class VoiceRecorder: CAPPlugin {
         let successfullyStartedRecording = customMediaRecorder.startRecording(directory: directory)
 
         if successfullyStartedRecording == false {
+            customMediaRecorder = nil
             call.reject(Messages.CANNOT_RECORD_ON_THIS_PHONE)
         } else {
             audioFilePath = customMediaRecorder.getOutputFile()
