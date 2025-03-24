@@ -4,7 +4,7 @@ import Capacitor
 
 @objc(VoiceRecorder)
 public class VoiceRecorder: CAPPlugin {
-    private let customMediaRecorder = CustomMediaRecorder()
+    private var customMediaRecorder = CustomMediaRecorder()
     private var audioFilePath: URL?
 
     override public func load() {
@@ -41,17 +41,17 @@ public class VoiceRecorder: CAPPlugin {
         let successfullyStartedRecording = customMediaRecorder.startRecording(directory: directory)
 
         if successfullyStartedRecording == false {
-            customMediaRecorder = nil
             call.reject(Messages.CANNOT_RECORD_ON_THIS_PHONE)
-        } else {
-            audioFilePath = customMediaRecorder.getOutputFile()
-            let recordData = RecordData(
-                mimeType: "audio/aac",
-                msDuration: -1,
-                filePath: audioFilePath!.absoluteString
-            )
-            call.resolve(ResponseGenerator.dataResponse(recordData.toDictionary()))
+            return
         }
+            
+        audioFilePath = customMediaRecorder.getOutputFile()
+        let recordData = RecordData(
+            mimeType: "audio/aac",
+            msDuration: -1,
+            filePath: audioFilePath!.absoluteString
+        )
+        call.resolve(ResponseGenerator.dataResponse(recordData.toDictionary()))
     }
 
     @objc func stopRecording(_ call: CAPPluginCall) {

@@ -6,7 +6,16 @@ class CustomMediaRecorder:NSObject {
     private var audioRecorder: AVAudioRecorder!
     private var audioFilePath: URL!
     private var originalRecordingSessionCategory: AVAudioSession.Category!
-    private var status = CurrentRecordingStatus.NONE
+    private var _status = CurrentRecordingStatus.NONE
+    var onStatusChange: ((CurrentRecordingStatus) -> Void)?
+    
+    private var status: CurrentRecordingStatus {
+        get { return _status }
+        set {
+            _status = newValue
+            onStatusChange?(newValue)
+        }
+    }
     
     private let settings = [
         AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
