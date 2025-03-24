@@ -6,6 +6,7 @@ class CustomMediaRecorder:NSObject {
     private var audioRecorder: AVAudioRecorder!
     private var audioFilePath: URL!
     private var originalRecordingSessionCategory: AVAudioSession.Category!
+
     private var _status = CurrentRecordingStatus.NONE
     var onStatusChange: ((CurrentRecordingStatus) -> Void)?
     
@@ -72,7 +73,7 @@ class CustomMediaRecorder:NSObject {
             originalRecordingSessionCategory = recordingSession.category
             
             // Configure for highest priority recording
-            try recordingSession.setCategory(.playAndRecord, 
+            try recordingSession.setCategory(.playAndRecord,
                                            mode: .default,
                                            options: [.allowBluetooth, .duckOthers, .defaultToSpeaker, .mixWithOthers])
             try recordingSession.setActive(true, options: .notifyOthersOnDeactivation)
@@ -165,8 +166,7 @@ class CustomMediaRecorder:NSObject {
     public func getCurrentStatus() -> CurrentRecordingStatus {
         return status
     }
-    
-
+ 
     public func removeRecording(fileUrl: URL) {
         do {
             if FileManager.default.fileExists(atPath: fileUrl.path) {
@@ -195,7 +195,12 @@ extension CustomMediaRecorder:AVAudioRecorderDelegate {
         case .began:
             let _ = pauseRecording()
         case .ended:
-            tryResumeRecording()
+            if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+                let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                if options.contains(.shouldResume) {
+                    tryResumeRecording()
+                }
+            }
         @unknown default:
             break
         }
@@ -248,10 +253,10 @@ extension CustomMediaRecorder:AVAudioRecorderDelegate {
         if status == .PAUSED && canRecord() {
                 let isResumed = resumeRecording()
                 if attempt < 3 && !isResumed {
-                    let delay = pow(2.0, Double(attempt)) * 0.5  
+                    let delay = pow(2.0, Double(attempt)) * 0.5
                     DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                     self.tryResumeRecording(attempt: attempt + 1)
-                }   
+                }
             }
         }
     }
