@@ -25,9 +25,13 @@ public class ForegroundService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        Notification notification = buildNotification(
-            intent.hasExtra(EXTRA_ICON_RES_NAME) ? intent.getStringExtra(EXTRA_ICON_RES_NAME) : "icon_default"
-        );
+        String iconResName = "icon_default";
+        if (intent != null && intent.hasExtra(EXTRA_ICON_RES_NAME)) {
+            iconResName = intent.getStringExtra(EXTRA_ICON_RES_NAME);
+        }
+        
+        Notification notification = buildNotification(iconResName);
+
         // Start the foreground service with the appropriate type
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
