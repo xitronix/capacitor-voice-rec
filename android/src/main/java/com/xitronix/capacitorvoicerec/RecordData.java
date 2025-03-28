@@ -5,22 +5,22 @@ import com.getcapacitor.JSObject;
 public class RecordData {
 
     private String mimeType;
-    private int msDuration;
+    private long msDuration;
     private String filePath;
 
     public RecordData() {}
 
-    public RecordData(int msDuration, String mimeType, String filePath) {
+    public RecordData(long msDuration, String mimeType, String filePath) {
         this.msDuration = msDuration;
         this.mimeType = mimeType;
         this.filePath = filePath;
     }
 
-    public int getMsDuration() {
+    public long getMsDuration() {
         return msDuration;
     }
 
-    public void setMsDuration(int msDuration) {
+    public void setMsDuration(long msDuration) {
         this.msDuration = msDuration;
     }
 

@@ -39,8 +39,17 @@ export class VoiceRecorderWeb extends WebPlugin implements VoiceRecorderPlugin {
     return VoiceRecorderImpl.requestAudioRecordingPermission();
   }
 
-  public startRecording(): Promise<RecordingData> {
-    return this.voiceRecorderInstance.startRecording();
+  public startRecording(options?: { directory?: string; useForegroundService?: boolean }): Promise<RecordingData> {
+    return this.voiceRecorderInstance.startRecording(options);
+  }
+
+  public continueRecording(options: { filePath: string; directory?: string }): Promise<RecordingData> {
+    try {
+      return this.voiceRecorderInstance.continueRecording(options.filePath);
+    } catch (error) {
+      console.error('Error continuing recording:', error);
+      throw error;
+    }
   }
 
   public stopRecording(): Promise<RecordingData> {

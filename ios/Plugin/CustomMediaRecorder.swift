@@ -25,6 +25,10 @@ class CustomMediaRecorder:NSObject {
         AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
     ]
     
+    // Property to keep track of previous file that needs to be merged
+    private var previousFileURL: URL?
+    private var previousFileDuration: Double = 0
+    
    /**
      * Get the directory URL corresponding to the JS string
      */
@@ -111,6 +115,184 @@ class CustomMediaRecorder:NSObject {
         }
     }
     
+    public func continueRecording(fromURL prevFileURL: URL, directory: String?) -> Bool {
+        // First ensure we're not already recording
+        if status == CurrentRecordingStatus.RECORDING || status == CurrentRecordingStatus.PAUSED {
+            return false
+        }
+        
+        // Store the previous file URL for later merging
+        self.previousFileURL = prevFileURL
+        
+        // Calculate and store the previous file duration
+        let prevAsset = AVURLAsset(url: prevFileURL)
+        self.previousFileDuration = CMTimeGetSeconds(prevAsset.duration)
+        
+        // Setup recording session
+        if !setupRecordingSession() {
+            return false
+        }
+        
+        // Create a new recording file path for the continuation
+        let audioFileName = "recording_continued_\(Date().timeIntervalSince1970).m4a"
+        let documentsDirectory = getDocumentsDirectory(directory)
+        audioFilePath = documentsDirectory.appendingPathComponent(audioFileName)
+        
+        // Setup recorder for a new recording
+        let settings: [String: Any] = [
+            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+            AVSampleRateKey: 44100.0,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+        ]
+        
+        do {
+            audioRecorder = try AVAudioRecorder(url: audioFilePath!, settings: settings)
+            audioRecorder.delegate = self
+            audioRecorder.isMeteringEnabled = true
+            
+            if audioRecorder.prepareToRecord() {
+                audioRecorder.record(forDuration: 14400) // 4 hours max
+                status = CurrentRecordingStatus.RECORDING
+                self.onStatusChange?(status)
+                return true
+            } else {
+                cleanup()
+                return false
+            }
+        } catch {
+            print("Error setting up recorder for continued recording: \(error)")
+            cleanup()
+            return false
+        }
+    }
+    
+    public func stopRecording() {
+        if audioRecorder != nil {
+            audioRecorder.stop()
+            
+            // If we have a previous file to merge
+            if let prevURL = previousFileURL, let currentURL = audioFilePath {
+                // Create a semaphore to wait for the merge to complete
+                let semaphore = DispatchSemaphore(value: 0)
+                
+                mergeAudioFiles(firstFileURL: prevURL, secondFileURL: currentURL) { [weak self] mergedFileURL in
+                    if let mergedURL = mergedFileURL {
+                        // Replace our current audio file path with the merged one
+                        self?.audioFilePath = mergedURL
+                        print("Successfully merged audio files to: \(mergedURL.path)")
+                    } else {
+                        print("Failed to merge audio files")
+                    }
+                    // Signal completion
+                    semaphore.signal()
+                }
+                
+                // Wait for a reasonable amount of time for the merge to complete
+                // This ensures getOutputFile() returns the correct file path
+                let timeout = DispatchTime.now() + 10.0 // 10 second timeout
+                if semaphore.wait(timeout: timeout) == .timedOut {
+                    print("Warning: Audio file merge timed out")
+                }
+            }
+            
+            // Clean up resources
+            cleanup()
+        }
+    }
+    
+    // Add a method to merge audio files
+    private func mergeAudioFiles(firstFileURL: URL, secondFileURL: URL, completion: @escaping (URL?) -> Void) {
+        let composition = AVMutableComposition()
+        
+        // Get audio from the first file
+        guard let firstAsset = try? AVURLAsset(url: firstFileURL) else {
+            print("Could not load first asset")
+            completion(nil)
+            return
+        }
+        
+        // Get audio from the second file
+        guard let secondAsset = try? AVURLAsset(url: secondFileURL) else {
+            print("Could not load second asset")
+            completion(nil)
+            return
+        }
+        
+        // Create a composition track for audio
+        guard let compositionTrack = composition.addMutableTrack(
+            withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            print("Could not create composition track")
+            completion(nil)
+            return
+        }
+        
+        // Add the first file's audio
+        do {
+            guard let firstTrack = firstAsset.tracks(withMediaType: .audio).first else {
+                print("No audio track in first file")
+                completion(nil)
+                return
+            }
+            
+            let timeRange = CMTimeRange(
+                start: CMTime.zero,
+                duration: firstAsset.duration
+            )
+            
+            try compositionTrack.insertTimeRange(timeRange, of: firstTrack, at: CMTime.zero)
+            
+            // Add the second file's audio
+            guard let secondTrack = secondAsset.tracks(withMediaType: .audio).first else {
+                print("No audio track in second file")
+                completion(nil)
+                return
+            }
+            
+            let secondTimeRange = CMTimeRange(
+                start: CMTime.zero,
+                duration: secondAsset.duration
+            )
+            
+            try compositionTrack.insertTimeRange(
+                secondTimeRange,
+                of: secondTrack,
+                at: firstAsset.duration
+            )
+            
+            // Create a temporary file to export to
+            let tempDirectoryURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            let outputURL = tempDirectoryURL.appendingPathComponent("merged_recording_\(Date().timeIntervalSince1970).m4a")
+            
+            // Setup exporter
+            guard let exporter = AVAssetExportSession(
+                asset: composition,
+                presetName: AVAssetExportPresetAppleM4A
+            ) else {
+                print("Could not create export session")
+                completion(nil)
+                return
+            }
+            
+            exporter.outputURL = outputURL
+            exporter.outputFileType = .m4a
+            
+            // Export the file
+            exporter.exportAsynchronously {
+                switch exporter.status {
+                case .completed:
+                    completion(outputURL)
+                default:
+                    print("Export failed: \(exporter.error?.localizedDescription ?? "Unknown error")")
+                    completion(nil)
+                }
+            }
+        } catch {
+            print("Error merging files: \(error)")
+            completion(nil)
+        }
+    }
+    
     private func cleanup() {
         do {
             if let recorder = audioRecorder {
@@ -127,10 +309,6 @@ class CustomMediaRecorder:NSObject {
         } catch {
             print("Error during cleanup: \(error)")
         }
-    }
-    
-    public func stopRecording() {
-        cleanup()
     }
     
     public func getOutputFile() -> URL? {
@@ -179,6 +357,58 @@ class CustomMediaRecorder:NSObject {
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+    }
+
+    private func setupRecordingSession() -> Bool {
+        // Set up all possible interruption observers
+        NotificationCenter.default.addObserver(self,
+                                            selector: #selector(handleInterruption),
+                                            name: AVAudioSession.interruptionNotification,
+                                            object: AVAudioSession.sharedInstance())
+        NotificationCenter.default.addObserver(self,
+                                            selector: #selector(handleRouteChange),
+                                            name: AVAudioSession.routeChangeNotification,
+                                            object: AVAudioSession.sharedInstance())
+        NotificationCenter.default.addObserver(self,
+                                            selector: #selector(handleSecondaryAudio),
+                                            name: AVAudioSession.silenceSecondaryAudioHintNotification,
+                                            object: AVAudioSession.sharedInstance())
+        NotificationCenter.default.addObserver(self,
+                                            selector: #selector(handleMediaServicesReset),
+                                            name: AVAudioSession.mediaServicesWereResetNotification,
+                                            object: AVAudioSession.sharedInstance())
+        
+        do {
+            recordingSession = AVAudioSession.sharedInstance()
+            originalRecordingSessionCategory = recordingSession.category
+            
+            // Configure for highest priority recording
+            try recordingSession.setCategory(.playAndRecord,
+                                        mode: .default,
+                                        options: [.allowBluetooth, .duckOthers, .defaultToSpeaker, .mixWithOthers])
+            try recordingSession.setActive(true, options: .notifyOthersOnDeactivation)
+            if #available(iOS 14.5, *) {
+                try recordingSession.setPrefersNoInterruptionsFromSystemAlerts(true)
+            }
+            
+            // Set audio session priority to high
+            try AVAudioSession.sharedInstance().setPreferredIOBufferDuration(0.005)
+            
+            // Check if microphone is available
+            guard recordingSession.isInputAvailable else {
+                cleanup()
+                return false
+            }
+            
+            return true
+        } catch {
+            cleanup()
+            return false
+        }
+    }
+
+    private func getDocumentsDirectory(_ directory: String?) -> URL {
+        return getDirectory(directory: directory)
     }
     
 }

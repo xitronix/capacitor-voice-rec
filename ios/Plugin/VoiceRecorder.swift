@@ -54,6 +54,70 @@ public class VoiceRecorder: CAPPlugin {
         call.resolve(ResponseGenerator.dataResponse(recordData.toDictionary()))
     }
 
+    @objc func continueRecording(_ call: CAPPluginCall) {
+        if(!doesUserGaveAudioRecordingPermission()) {
+            call.reject(Messages.MISSING_PERMISSION)
+            return
+        }
+        
+        guard let prevFilePath = call.getString("filePath") else {
+            call.reject("Missing previous recording file path")
+            return
+        }
+        
+        // Convert file URL string to URL
+        let prevFileURL: URL
+        if prevFilePath.hasPrefix("file://") {
+            // Handle file:// URLs properly
+            if let url = URL(string: prevFilePath) {
+                prevFileURL = url
+            } else {
+                call.reject("Invalid file URL format: \(prevFilePath)")
+                return
+            }
+        } else {
+            prevFileURL = URL(fileURLWithPath: prevFilePath)
+        }
+        
+        // Check if file exists
+        if !FileManager.default.fileExists(atPath: prevFileURL.path) {
+            call.reject("Previous recording file not found at path: \(prevFileURL.path)")
+            return
+        }
+        
+        // Check file is readable and has content
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: prevFileURL.path)
+            let fileSize = attributes[.size] as? NSNumber ?? 0
+            if fileSize.intValue <= 0 {
+                call.reject("Previous recording file is empty")
+                return
+            }
+        } catch {
+            call.reject("Error checking file attributes: \(error.localizedDescription)")
+            return
+        }
+        
+        let directory = call.getString("directory")
+        let successfullyStartedRecording = customMediaRecorder.continueRecording(
+            fromURL: prevFileURL,
+            directory: directory
+        )
+
+        if successfullyStartedRecording == false {
+            call.reject(Messages.CANNOT_RECORD_ON_THIS_PHONE)
+            return
+        }
+            
+        audioFilePath = customMediaRecorder.getOutputFile()
+        let recordData = RecordData(
+            mimeType: "audio/aac",
+            msDuration: -1,
+            filePath: audioFilePath!.absoluteString
+        )
+        call.resolve(ResponseGenerator.dataResponse(recordData.toDictionary()))
+    }
+
     @objc func stopRecording(_ call: CAPPluginCall) {
         customMediaRecorder.stopRecording()
         audioFilePath = customMediaRecorder.getOutputFile()

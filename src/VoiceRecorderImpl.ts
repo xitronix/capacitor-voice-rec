@@ -26,6 +26,7 @@ export class VoiceRecorderImpl {
   private pendingResult: Promise<RecordingData> = neverResolvingPromise();
   private currentStream: MediaStream | null = null;
   public onStateChange?: (status: CurrentRecordingStatus) => void;
+  private saveInterval: ReturnType<typeof setInterval> | null = null;
 
   static readonly DB_NAME = 'capacitor-voice-rec-db';
   static readonly DB_STORE_NAME = 'recordings';
@@ -64,7 +65,7 @@ export class VoiceRecorderImpl {
     }
   }
 
-  public async startRecording(): Promise<RecordingData> {
+  public async startRecording(options?: { directory?: string }): Promise<RecordingData> {
     // First clean up any existing recording
     this.prepareInstanceForNextOperation();
 
@@ -86,6 +87,12 @@ export class VoiceRecorderImpl {
           channelCount: 1,
         },
       });
+      
+      // Use any directory option passed from the options parameter
+      // It's not used in the web implementation but we need to reference it to fix the TS error
+      const directory = options?.directory;
+      console.log(`Recording to directory (web): ${directory || 'default'}`);
+      
       const result = this.onSuccessfullyStartedRecording(stream);
       this.notifyStateChange('RECORDING');
       return result;
@@ -169,7 +176,79 @@ export class VoiceRecorderImpl {
     return foundSupportedType ?? null;
   }
 
-  private onSuccessfullyStartedRecording(stream: MediaStream): RecordingData {
+  public async continueRecording(filePath: string): Promise<RecordingData> {
+    // First clean up any existing recording
+    this.prepareInstanceForNextOperation();
+
+    const deviceCanRecord = await VoiceRecorderImpl.canDeviceVoiceRecord();
+    if (!deviceCanRecord.value) {
+      throw deviceCannotVoiceRecordError();
+    }
+    const havingPermission = await VoiceRecorderImpl.hasAudioRecordingPermission().catch(() => successResponse());
+    if (!havingPermission.value) {
+      throw missingPermissionError();
+    }
+
+    try {
+      // Check if the filepath exists in IndexedDB first
+      const pathComponents = filePath.replace('idb://', '').split('/');
+      const fileName = pathComponents[pathComponents.length - 1];
+      
+      const db = await openIDB();
+      const existingRecording = await db.get(VoiceRecorderImpl.DB_STORE_NAME, fileName);
+      
+      // Track existing recording duration if available
+      let existingDuration = 0;
+      
+      // If the recording doesn't exist or is invalid, we'll start a fresh recording
+      // with the same file name to maintain continuity
+      if (!existingRecording || !(existingRecording instanceof Blob) || existingRecording.size === 0) {
+        console.warn(`Recording not found or invalid in IndexedDB: ${fileName}. Starting a fresh recording.`);
+        // We'll start a fresh recording but use the same filename
+        this.chunks = [];
+      } else {
+        console.log(`Found existing recording in IndexedDB: ${fileName}, size: ${existingRecording.size} bytes`);
+        
+        // Try to calculate the duration of the existing recording
+        try {
+          existingDuration = await getBlobDuration(existingRecording) * 1000;
+          console.log(`Existing recording duration: ${existingDuration}ms`);
+        } catch (error) {
+          console.warn('Could not determine duration of existing recording:', error);
+        }
+        
+        // Store existing recording for later merging
+        this.chunks = [existingRecording];
+      }
+      
+      // Start new recording session
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          autoGainControl: true,
+          noiseSuppression: true,
+          channelCount: 1,
+        },
+      });
+      
+      // Use same filename to ensure it gets merged with the previous recording
+      const result = this.onSuccessfullyStartedRecording(stream, fileName);
+      
+      // Add the duration information to the result
+      if (existingDuration > 0) {
+        result.value.msDuration = existingDuration;
+      }
+      
+      this.notifyStateChange('RECORDING');
+      return result;
+    } catch (error) {
+      console.error('Failed to continue recording:', error);
+      this.prepareInstanceForNextOperation();
+      throw failedToRecordError();
+    }
+  }
+
+  private onSuccessfullyStartedRecording(stream: MediaStream, existingFileName?: string): RecordingData {
     const mimeType = VoiceRecorderImpl.getSupportedMimeType();
     if (mimeType == null) {
       this.prepareInstanceForNextOperation();
@@ -177,10 +256,25 @@ export class VoiceRecorderImpl {
     }
 
     this.currentStream = stream;
-    this.chunks = [];
+    if (!existingFileName) {
+      this.chunks = [];
+    }
 
-    const fileName = `audio-${Date.now()}.webm`;
+    const fileName = existingFileName || `audio-${Date.now()}.webm`;
     const finalPath = `idb://${VoiceRecorderImpl.DB_NAME}/${VoiceRecorderImpl.DB_STORE_NAME}/${fileName}`;
+
+    // Set up periodic saving of chunks to IndexedDB (every 3 seconds)
+    this.saveInterval = setInterval(async () => {
+      if (this.chunks.length > 0 && this.mediaRecorder?.state !== 'inactive') {
+        try {
+          const tempBlob = new Blob(this.chunks, { type: mimeType });
+          await saveToIndexedDB(tempBlob, fileName);
+          console.log('Saved interim recording to IndexedDB');
+        } catch (e) {
+          console.error('Failed to save interim recording:', e);
+        }
+      }
+    }, 3000);
 
     this.pendingResult = new Promise((resolve, reject) => {
       try {
@@ -189,6 +283,7 @@ export class VoiceRecorderImpl {
           audioBitsPerSecond: 128000
         });
       } catch (error) {
+        if (this.saveInterval) clearInterval(this.saveInterval);
         console.error('Failed to create MediaRecorder:', error);
         this.prepareInstanceForNextOperation();
         reject(failedToRecordError());
@@ -202,12 +297,14 @@ export class VoiceRecorderImpl {
       };
 
       this.mediaRecorder.onerror = (event) => {
+        if (this.saveInterval) clearInterval(this.saveInterval);
         console.error('MediaRecorder error:', event);
         this.prepareInstanceForNextOperation();
         reject(failedToRecordError());
       };
 
       this.mediaRecorder.onstop = async () => {
+        if (this.saveInterval) clearInterval(this.saveInterval); // Clear the interval when recording stops
         try {
           // Wait a small amount of time to ensure all chunks are collected
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -270,6 +367,12 @@ export class VoiceRecorderImpl {
   // }
 
   private prepareInstanceForNextOperation(): void {
+    // Clear any save interval if it exists
+    if (this.saveInterval !== null) {
+      clearInterval(this.saveInterval);
+      this.saveInterval = null;
+    }
+    
     this.cleanupMediaRecorder();
     this.cleanupStream();
     this.chunks = [];
@@ -285,7 +388,10 @@ export class VoiceRecorderImpl {
 
 async function saveToIndexedDB(blob: Blob, fileName: string): Promise<string> {
   const db = await openIDB();
+  
+  // Store the file
   await db.put(VoiceRecorderImpl.DB_STORE_NAME, blob, fileName);
+  
   return `idb://${VoiceRecorderImpl.DB_NAME}/${VoiceRecorderImpl.DB_STORE_NAME}/${fileName}`;
 }
 

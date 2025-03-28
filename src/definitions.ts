@@ -32,7 +32,14 @@ export interface VoiceRecorderPlugin {
 
   hasAudioRecordingPermission(): Promise<GenericResponse>;
 
-  startRecording(): Promise<RecordingData>;
+  startRecording(options?: { directory?: string; useForegroundService?: boolean }): Promise<RecordingData>;
+  
+  continueRecording(options: {
+    filePath: string;
+    smallIcon?: string;
+    useForegroundService?: boolean;
+    directory?: string;
+  }): Promise<RecordingData>;
 
   stopRecording(): Promise<RecordingData>;
 
