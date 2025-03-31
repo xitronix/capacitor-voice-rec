@@ -1,4 +1,4 @@
-import { VoiceRecorder } from 'cap-voice-rec';
+import { VoiceRecorder } from 'capacitor-voice-rec';
 
 updateRecordCapabilityLabel();
 updatePermissionStatusLabel();
