@@ -60,10 +60,6 @@ class CustomMediaRecorder:NSObject {
                                              name: AVAudioSession.interruptionNotification,
                                              object: AVAudioSession.sharedInstance())
         NotificationCenter.default.addObserver(self,
-                                             selector: #selector(handleRouteChange),
-                                             name: AVAudioSession.routeChangeNotification,
-                                             object: AVAudioSession.sharedInstance())
-        NotificationCenter.default.addObserver(self,
                                              selector: #selector(handleSecondaryAudio),
                                              name: AVAudioSession.silenceSecondaryAudioHintNotification,
                                              object: AVAudioSession.sharedInstance())
@@ -366,10 +362,6 @@ class CustomMediaRecorder:NSObject {
                                             name: AVAudioSession.interruptionNotification,
                                             object: AVAudioSession.sharedInstance())
         NotificationCenter.default.addObserver(self,
-                                            selector: #selector(handleRouteChange),
-                                            name: AVAudioSession.routeChangeNotification,
-                                            object: AVAudioSession.sharedInstance())
-        NotificationCenter.default.addObserver(self,
                                             selector: #selector(handleSecondaryAudio),
                                             name: AVAudioSession.silenceSecondaryAudioHintNotification,
                                             object: AVAudioSession.sharedInstance())
@@ -432,21 +424,6 @@ extension CustomMediaRecorder:AVAudioRecorderDelegate {
                 }
             }
         @unknown default:
-            break
-        }
-    }
-
-    @objc func handleRouteChange(notification: Notification) {
-        guard let userInfo = notification.userInfo,
-              let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
-              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
-            return
-        }
-
-        switch reason {
-        case .override, .oldDeviceUnavailable:
-            let _ = pauseRecording()
-        default:
             break
         }
     }
