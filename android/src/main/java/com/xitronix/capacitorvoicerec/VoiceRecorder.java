@@ -7,7 +7,9 @@ import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Process;
 import android.util.Log;
+import android.app.ActivityManager;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
@@ -34,6 +36,9 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
     private boolean useForegroundService = false;
     // private String currentDirectory = "DOCUMENTS"; // Store directory if needed across calls
 
+    // Static reference to the active recorder for the foreground service
+    private static CustomMediaRecorder activeRecorder;
+
     @Override
     public void load() {
         // Initialization if needed when the plugin loads
@@ -44,7 +49,6 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
     // Callback from CustomMediaRecorder
     @Override
     public void onStatusChange(CurrentRecordingStatus status) {
-        Log.d(TAG, "Notifying status change: " + status);
         notifyListeners(EVENT_STATE_CHANGE, ResponseGenerator.statusResponse(status));
     }
 
@@ -72,10 +76,8 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
     @PluginMethod
     public void requestAudioRecordingPermission(PluginCall call) {
         if (doesUserGaveAudioRecordingPermission()) {
-            Log.d(TAG, "Permission already granted.");
             call.resolve(ResponseGenerator.successResponse());
         } else {
-            Log.d(TAG, "Requesting permission.");
             // Use requestPermissionForAlias for consistent handling
             requestPermissionForAlias(RECORD_AUDIO_ALIAS, call, "recordAudioPermissionCallback");
         }
@@ -84,10 +86,8 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
     @PermissionCallback
     private void recordAudioPermissionCallback(PluginCall call) {
         if (doesUserGaveAudioRecordingPermission()) {
-            Log.d(TAG, "Permission granted after request.");
             call.resolve(ResponseGenerator.successResponse());
         } else {
-            Log.d(TAG, "Permission denied after request.");
             call.reject(Messages.MISSING_PERMISSION); // Reject if denied
         }
     }
@@ -130,6 +130,7 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
             // Create a new recorder instance for each recording session
             customMediaRecorder = new CustomMediaRecorder(getContext());
             customMediaRecorder.setListener(this); // Set listener for status updates
+            activeRecorder = customMediaRecorder; // Update static reference
 
             String filePathUri = customMediaRecorder.startRecording(directory);
 
@@ -158,22 +159,32 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
      @PluginMethod
      public void continueRecording(PluginCall call) {
          if (!doesUserGaveAudioRecordingPermission()) {
-             call.reject(Messages.MISSING_PERMISSION, RECORD_AUDIO_ALIAS);
+             call.reject(Messages.MISSING_PERMISSION);
              return;
          }
 
-         if (isMicrophoneOccupied()) {
-              call.reject(Messages.MICROPHONE_BEING_USED);
-              return;
+         // First, check if there's already an active recording from a foreground service
+         boolean foregroundServiceActive = isForegroundServiceActive();
+         
+         if (foregroundServiceActive) {
+             // Force stop the foreground service
+             stopForegroundService();
+             
+             // Wait a moment for service to properly stop
+             try {
+                 Thread.sleep(500);
+             } catch (InterruptedException e) {
+                 // Ignore
+             }
          }
 
-         // Allow continuing only if stopped (NONE state)
          if (customMediaRecorder != null && customMediaRecorder.getCurrentStatus() != CurrentRecordingStatus.NONE) {
-             call.reject("Cannot continue recording, recorder is currently active or paused. Stop recording first.");
+             call.reject(Messages.ALREADY_RECORDING);
              return;
          }
 
-          // Get previous file path and directory
+         // Continue with normal continue recording logic...
+         // Get previous file path and directory
          String prevFilePathUri = call.getString("filePath");
          String directory = call.getString("directory", "DOCUMENTS"); // Directory for the *new* segment
           // this.currentDirectory = directory;
@@ -185,7 +196,6 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
 
           // Validate URI format (basic)
          if (!prevFilePathUri.startsWith("file://")) {
-              Log.w(TAG, "Previous file path does not start with file://, using as is: " + prevFilePathUri);
               // Consider rejecting if format is strictly expected:
               // call.reject("Invalid 'filePath' format. Expected a file URI (file://...).");
               // return;
@@ -268,7 +278,6 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
             long duration = getMsDurationOfAudioFile(finalPath);
 
             if (duration <= 0) {
-                Log.w(TAG,"Recording resulted in empty or invalid file: " + finalPath + " Duration: " + duration);
                 new File(finalPath).delete();
                 call.reject(Messages.EMPTY_RECORDING);
             } else {
@@ -286,6 +295,7 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
         } finally {
             // Clean up the recorder instance after stopping
             customMediaRecorder = null;
+            activeRecorder = null; // Clear static reference
         }
     }
 
@@ -330,10 +340,77 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
 
     @PluginMethod
     public void getCurrentStatus(PluginCall call) {
-        CurrentRecordingStatus status = (customMediaRecorder != null)
-            ? customMediaRecorder.getCurrentStatus()
-            : CurrentRecordingStatus.NONE;
-        call.resolve(ResponseGenerator.statusResponse(status));
+        if (customMediaRecorder == null) {
+            // If no recorder initialized, status is NONE
+            call.resolve(ResponseGenerator.statusResponse(CurrentRecordingStatus.NONE));
+        } else {
+            call.resolve(ResponseGenerator.statusResponse(customMediaRecorder.getCurrentStatus()));
+        }
+    }
+
+    /**
+     * Get information about a recording file without having to continue/stop it
+     * This allows apps to directly access recording information even if the microphone is busy
+     */
+    @PluginMethod
+    public void getRecordingInfo(PluginCall call) {
+        String filePath = call.getString("filePath");
+        if (filePath == null || filePath.isEmpty()) {
+            call.reject("Missing required 'filePath' parameter");
+            return;
+        }
+        
+        // Create a temporary instance to check file info (doesn't affect active recording)
+        CustomMediaRecorder infoChecker = new CustomMediaRecorder(getContext());
+        java.util.Map<String, Object> info = infoChecker.getRecordingInfo(filePath);
+        
+        if (!(boolean)info.get("exists")) {
+            call.reject("Recording file not found or invalid");
+            return;
+        }
+        
+        // Build response
+        RecordData recordData = new RecordData(
+            ((Number)info.get("durationMs")).longValue(),
+            "audio/aac",
+            (String)info.get("fileUri")
+        );
+        
+        JSObject response = recordData.toJSObject();
+        response.put("hasSegments", info.get("hasSegments"));
+        
+        call.resolve(ResponseGenerator.dataResponse(response));
+    }
+    
+    /**
+     * Finalize a recording by merging any temporary segments without continuing/stopping it
+     * This allows apps to access and finalize recordings even if the microphone is busy
+     */
+    @PluginMethod
+    public void finalizeRecording(PluginCall call) {
+        String filePath = call.getString("filePath");
+        if (filePath == null || filePath.isEmpty()) {
+            call.reject("Missing required 'filePath' parameter");
+            return;
+        }
+        
+        // Create a temporary instance for finalization (doesn't affect active recording)
+        CustomMediaRecorder finalizer = new CustomMediaRecorder(getContext());
+        java.util.Map<String, Object> result = finalizer.finalizeRecording(filePath);
+        
+        if (!(boolean)result.get("success")) {
+            call.reject("Failed to finalize recording");
+            return;
+        }
+        
+        // Build response
+        RecordData recordData = new RecordData(
+            ((Number)result.get("durationMs")).longValue(),
+            "audio/aac",
+            (String)result.get("fileUri")
+        );
+        
+        call.resolve(ResponseGenerator.dataResponse(recordData.toJSObject()));
     }
 
     // --- Helper Methods ---
@@ -369,7 +446,6 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
         // Check audio mode and if recording is active via AudioRecord (more complex)
         // A simple check is the audio mode. MODE_IN_COMMUNICATION often means mic is active.
          int mode = audioManager.getMode();
-         Log.d(TAG, "Current AudioManager mode: " + mode);
          // Consider other modes as potentially problematic too, though MODE_NORMAL should be safe.
          // This check is basic and might not cover all scenarios (e.g., other apps using AudioRecord directly).
         return mode == AudioManager.MODE_IN_COMMUNICATION || mode == AudioManager.MODE_IN_CALL;
@@ -379,36 +455,56 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
      // --- Foreground Service Helpers ---
 
      private void startForegroundService(PluginCall call) {
+         // If there is already a service running, stop it first
+         if (ForegroundService.isServiceRunning()) {
+             ForegroundService.stopService();
+             
+             // Wait a moment for service to properly stop
+             try {
+                 Thread.sleep(300);
+             } catch (InterruptedException e) {
+                 // Ignore
+             }
+         }
+         
          Intent serviceIntent = new Intent(getContext(), ForegroundService.class);
          // Pass configuration like icon name if needed
-         String smallIcon = call.getString("smallIcon"); // Make sure this matches the expected key
+         String smallIcon = call.getString("smallIcon");
          if (smallIcon != null) {
               serviceIntent.putExtra(ForegroundService.EXTRA_ICON_RES_NAME, smallIcon);
-              Log.d(TAG, "Starting Foreground Service with custom icon name: " + smallIcon);
-         } else {
-              Log.d(TAG, "Starting Foreground Service with default icon.");
          }
-          // Add other extras like notification title/text if configurable
-          // serviceIntent.putExtra(ForegroundService.EXTRA_NOTIFICATION_TITLE, call.getString("notificationTitle", "Recording Audio"));
-          // serviceIntent.putExtra(ForegroundService.EXTRA_NOTIFICATION_TEXT, call.getString("notificationText", "Tap to return to app"));
-
+         
          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
              getContext().startForegroundService(serviceIntent);
          } else {
               // Older versions don't have startForegroundService, just startService
               getContext().startService(serviceIntent);
-              // Note: foreground notification might behave differently pre-Oreo
          }
      }
 
      private void stopForegroundService() {
-          Log.d(TAG, "Stopping Foreground Service.");
+         // Use the static method to ensure we only stop the service if it's running
+         ForegroundService.stopService();
+         
+         // Wait a moment to ensure service is stopped
+         try {
+             Thread.sleep(200);
+         } catch (InterruptedException e) {
+             // Ignore
+         }
+         
+         // For additional safety, also try the old method
          Intent serviceIntent = new Intent(getContext(), ForegroundService.class);
          getContext().stopService(serviceIntent);
      }
 
-    // Optional: Add a method to delete recordings if needed (like iOS/Web)
-    // @PluginMethod
-    // public void deleteRecording(PluginCall call) { ... }
+    // Helper method to check if foreground service is active
+    private boolean isForegroundServiceActive() {
+        return ForegroundService.isServiceRunning();
+    }
 
+    // Getter for the active recorder
+    public static CustomMediaRecorder getActiveRecorder() {
+        return activeRecorder;
+    }
 }

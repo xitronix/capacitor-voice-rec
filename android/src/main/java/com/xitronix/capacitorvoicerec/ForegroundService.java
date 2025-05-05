@@ -4,11 +4,13 @@ import android.annotation.SuppressLint;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
+import android.util.Log;
 import androidx.core.app.NotificationCompat;
 
 public class ForegroundService extends Service {
@@ -16,35 +18,84 @@ public class ForegroundService extends Service {
     public static final String CHANNEL_ID = "VoiceRecorderChannel";
     private static final int NOTIFICATION_ID = 1;
     public static final String EXTRA_ICON_RES_NAME = "small_icon_res_name";
+    public static final String ACTION_STOP_FOREGROUND_SERVICE = "com.xitronix.capacitorvoicerec.STOP_FOREGROUND_SERVICE";
+    private static final String TAG = "VoiceRecorderService";
+    
+    // Static instance tracking to ensure only one service runs at a time
+    private static ForegroundService activeInstance = null;
+    private static final Object instanceLock = new Object();
+    
+    // Static method to check if service is running
+    public static boolean isServiceRunning() {
+        synchronized (instanceLock) {
+            return activeInstance != null;
+        }
+    }
+    
+    // Static method to stop any running service
+    public static void stopService() {
+        synchronized (instanceLock) {
+            if (activeInstance != null) {
+                try {
+                    Intent intent = new Intent(activeInstance, ForegroundService.class);
+                    intent.setAction(ACTION_STOP_FOREGROUND_SERVICE);
+                    activeInstance.startService(intent);
+                } catch (Exception e) {
+                    Log.e(TAG, "Error stopping foreground service", e);
+                }
+            }
+        }
+    }
 
     @Override
     public void onCreate() {
         super.onCreate();
+        synchronized (instanceLock) {
+            activeInstance = this;
+        }
         createNotificationChannel();
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        String iconResName = "icon_default";
-        if (intent != null && intent.hasExtra(EXTRA_ICON_RES_NAME)) {
-            iconResName = intent.getStringExtra(EXTRA_ICON_RES_NAME);
+        // Start as foreground service with notification
+        if (intent != null) {
+            String iconName = intent.getStringExtra(EXTRA_ICON_RES_NAME);
+            startForeground(NOTIFICATION_ID, buildNotification(iconName));
+            
+            String action = intent.getAction();
+            if (action != null && action.equals(ACTION_STOP_FOREGROUND_SERVICE)) {
+                // If we have an active recorder in the service, stop it
+                if (VoiceRecorder.getActiveRecorder() != null) {
+                    try {
+                        VoiceRecorder.getActiveRecorder().stopRecording();
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error stopping recording in foreground service", e);
+                    }
+                }
+                
+                // Stop the service
+                stopForeground(true);
+                stopSelf();
+                return START_NOT_STICKY;
+            }
+        } else {
+            // If intent is null, still start foreground with default notification
+            startForeground(NOTIFICATION_ID, buildNotification(null));
         }
         
-        Notification notification = buildNotification(iconResName);
-
-        // Start the foreground service with the appropriate type
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
-        } else {
-            startForeground(NOTIFICATION_ID, notification);
-        }
+        // Default handling for continuation
         return START_STICKY;
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
-        // Stop your recording logic here
+        synchronized (instanceLock) {
+            if (activeInstance == this) {
+                activeInstance = null;
+            }
+        }
     }
 
     @Override
@@ -54,19 +105,56 @@ public class ForegroundService extends Service {
 
     private Notification buildNotification(String notificationIconResName) {
         @SuppressLint("DiscouragedApi")
-        int iconResId = getResources().getIdentifier(notificationIconResName, "drawable", getPackageName());
-
+        int iconResId = 0;
+        
+        if (notificationIconResName != null) {
+            iconResId = getResources().getIdentifier(notificationIconResName, "drawable", getPackageName());
+        }
+        
         if (iconResId == 0) {
-            iconResId = R.drawable.default_icon; // fallback to default icon
+            iconResId = android.R.drawable.ic_btn_speak_now; // Standard microphone icon as fallback
+        }
+        
+        // Create intent for stopping the recording when notification is clicked
+        Intent stopIntent = new Intent(this, ForegroundService.class);
+        stopIntent.setAction(ACTION_STOP_FOREGROUND_SERVICE);
+        PendingIntent pendingStopIntent = PendingIntent.getService(
+            this, 0, stopIntent, 
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? 
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT : 
+                PendingIntent.FLAG_UPDATE_CURRENT
+        );
+        
+        // Find the app's main activity
+        Intent mainIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
+        PendingIntent contentIntent = null;
+        
+        if (mainIntent != null) {
+            contentIntent = PendingIntent.getActivity(
+                this, 0, mainIntent,
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? 
+                    PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT : 
+                    PendingIntent.FLAG_UPDATE_CURRENT
+            );
         }
 
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Recording in Progress")
-            .setContentText("Remember to stop recording")
-            .setSmallIcon(iconResId) // Ensure you have a small icon set
+            .setContentText("Tap to return to app")
+            .setSmallIcon(iconResId)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .build();
+            .setOngoing(true);
+            
+        // Set content intent if available
+        if (contentIntent != null) {
+            builder.setContentIntent(contentIntent);
+        }
+        
+        // Add stop action
+        builder.addAction(android.R.drawable.ic_media_pause, "Stop Recording", pendingStopIntent);
+        
+        return builder.build();
     }
 
     private void createNotificationChannel() {

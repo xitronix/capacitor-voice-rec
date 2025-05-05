@@ -5,6 +5,7 @@ public class Messages {
     public static final String MISSING_PERMISSION = "Missing permission";
     public static final String MICROPHONE_BEING_USED = "Microphone is being used by another application";
     public static final String ALREADY_RECORDING = "Already recording";
+    public static final String RECORDING_ALREADY_STARTED = "Recording has already been started";
     public static final String NOT_RECORDING = "Not currently recording";
     public static final String FILE_DOES_NOT_EXIST = "Recording file does not exist";
     public static final String RECORDING_FAILED = "Recording failed";

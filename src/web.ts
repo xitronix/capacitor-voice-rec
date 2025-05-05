@@ -2,7 +2,13 @@ import { WebPlugin } from '@capacitor/core';
 import type { PluginListenerHandle } from '@capacitor/core';
 
 import { VoiceRecorderImpl } from './VoiceRecorderImpl';
-import type { CurrentRecordingStatus, GenericResponse, RecordingData, VoiceRecorderPlugin } from './definitions';
+import type { 
+  CurrentRecordingStatus, 
+  GenericResponse, 
+  RecordingData, 
+  RecordingInfoData,
+  VoiceRecorderPlugin 
+} from './definitions';
 
 export class VoiceRecorderWeb extends WebPlugin implements VoiceRecorderPlugin {
   private voiceRecorderInstance = new VoiceRecorderImpl();
@@ -60,11 +66,27 @@ export class VoiceRecorderWeb extends WebPlugin implements VoiceRecorderPlugin {
     return this.voiceRecorderInstance.pauseRecording();
   }
 
-  public resumeRecording(): Promise<GenericResponse> {
+  public async resumeRecording(): Promise<GenericResponse> {
     return this.voiceRecorderInstance.resumeRecording();
   }
 
   public getCurrentStatus(): Promise<CurrentRecordingStatus> {
     return Promise.resolve(this.currentStatus);
+  }
+  
+  /**
+   * Get information about a recording file without having to continue/stop it
+   * This method is a web implementation fallback
+   */
+  public async getRecordingInfo(options: { filePath: string }): Promise<RecordingInfoData> {
+    return this.voiceRecorderInstance.getRecordingInfo(options.filePath);
+  }
+  
+  /**
+   * Finalize a recording by merging any temporary segments without continuing/stopping it
+   * This method is a web implementation fallback
+   */
+  public async finalizeRecording(options: { filePath: string }): Promise<RecordingData> {
+    return this.voiceRecorderInstance.finalizeRecording(options.filePath);
   }
 }

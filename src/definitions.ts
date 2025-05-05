@@ -10,6 +10,15 @@ export interface RecordingData {
   };
 }
 
+export interface RecordingInfoData {
+  value: {
+    msDuration: number;
+    mimeType: string;
+    filePath: string;
+    hasSegments: boolean;
+  };
+}
+
 export interface GenericResponse {
   value: boolean;
 }
@@ -48,4 +57,22 @@ export interface VoiceRecorderPlugin {
   resumeRecording(): Promise<GenericResponse>;
 
   getCurrentStatus(): Promise<CurrentRecordingStatus>;
+  
+  /**
+   * Get information about a recording file without having to continue/stop it
+   * This allows accessing a recording file even when the microphone is busy
+   * @param options.filePath The path to the recording file
+   */
+  getRecordingInfo(options: {
+    filePath: string;
+  }): Promise<RecordingInfoData>;
+  
+  /**
+   * Finalize a recording by merging any temporary segments without continuing/stopping it
+   * This allows finalizing a recording even when the microphone is busy
+   * @param options.filePath The path to the recording file
+   */
+  finalizeRecording(options: {
+    filePath: string;
+  }): Promise<RecordingData>;
 }

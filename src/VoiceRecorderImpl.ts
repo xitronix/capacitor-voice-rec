@@ -2,7 +2,7 @@
 import getBlobDuration from 'get-blob-duration';
 import { openDB } from 'idb';
 
-import type { CurrentRecordingStatus, GenericResponse, RecordingData } from './definitions';
+import type { CurrentRecordingStatus, GenericResponse, RecordingData, RecordingInfoData } from './definitions';
 
 import {
   couldNotQueryPermissionStatusError,
@@ -155,6 +155,87 @@ export class VoiceRecorderImpl {
       return Promise.resolve(successResponse());
     } else {
       return Promise.resolve(failureResponse());
+    }
+  }
+
+  /**
+   * Get information about a recording file without requiring microphone access
+   * @param filePath Path to the recording file
+   * @returns Information about the recording including duration and if it has segments
+   */
+  public async getRecordingInfo(filePath: string): Promise<RecordingInfoData> {
+    try {
+      // Parse the file path to get the filename
+      const pathComponents = filePath.replace('idb://', '').split('/');
+      const fileName = pathComponents[pathComponents.length - 1];
+      
+      // Open IndexedDB and check if the file exists
+      const db = await openIDB();
+      const existingRecording = await db.get(VoiceRecorderImpl.DB_STORE_NAME, fileName);
+      
+      // If the recording doesn't exist, return an error
+      if (!existingRecording || !(existingRecording instanceof Blob) || existingRecording.size === 0) {
+        console.warn(`Recording not found or invalid in IndexedDB: ${fileName}`);
+        return {
+          value: {
+            filePath,
+            mimeType: '',
+            msDuration: 0,
+            hasSegments: false
+          }
+        };
+      }
+      
+      // Get the duration of the recording
+      let duration = 0;
+      try {
+        duration = await getBlobDuration(existingRecording) * 1000;
+      } catch (error) {
+        console.warn('Could not determine duration of existing recording:', error);
+      }
+      
+      // Get the mime type of the recording
+      const mimeType = existingRecording.type || VoiceRecorderImpl.getSupportedMimeType() || '';
+      
+      // Web implementation doesn't have segments concept, but we'll return a value
+      // to be consistent with the native implementation
+      return {
+        value: {
+          filePath,
+          mimeType,
+          msDuration: duration,
+          hasSegments: false
+        }
+      };
+    } catch (error) {
+      console.error('Error getting recording info:', error);
+      throw failedToFetchRecordingError();
+    }
+  }
+
+  /**
+   * Finalize a recording by ensuring it's properly saved in IndexedDB
+   * Web implementation doesn't have segments concept, so this just checks
+   * if the recording exists and returns its info
+   * @param filePath Path to the recording file
+   * @returns Information about the finalized recording
+   */
+  public async finalizeRecording(filePath: string): Promise<RecordingData> {
+    try {
+      // In web implementation, we don't need to merge segments as we continually
+      // save the entire recording to IndexedDB. So we just get the recording info.
+      const recordingInfo = await this.getRecordingInfo(filePath);
+      
+      return {
+        value: {
+          filePath: recordingInfo.value.filePath,
+          mimeType: recordingInfo.value.mimeType,
+          msDuration: recordingInfo.value.msDuration
+        }
+      };
+    } catch (error) {
+      console.error('Error finalizing recording:', error);
+      throw failedToFetchRecordingError();
     }
   }
 

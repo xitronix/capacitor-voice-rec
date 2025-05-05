@@ -6,6 +6,7 @@ class CustomMediaRecorder:NSObject {
     private var audioRecorder: AVAudioRecorder!
     private var audioFilePath: URL!
     private var originalRecordingSessionCategory: AVAudioSession.Category!
+    private var currentTempRecordingPath: URL?
 
     private var _status = CurrentRecordingStatus.NONE
     var onStatusChange: ((CurrentRecordingStatus) -> Void)?
@@ -25,9 +26,10 @@ class CustomMediaRecorder:NSObject {
         AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
     ]
     
-    // Property to keep track of previous file that needs to be merged
-    private var previousFileURL: URL?
-    private var previousFileDuration: Double = 0
+    // Property to keep track of primary file
+    private var originalFileURL: URL?
+    // Storage for temporary recording segments that need to be merged
+    private var tempRecordingSegments: [URL] = []
     
    /**
      * Get the directory URL corresponding to the JS string
@@ -53,8 +55,10 @@ class CustomMediaRecorder:NSObject {
         return dirUrl.appendingPathComponent(fileName)
     }
 
-    public func startRecording(directory: String?) -> Bool {
-        // Set up all possible interruption observers
+    /**
+     * Set up notification observers for audio session events
+     */
+    private func setupNotificationObservers() {
         NotificationCenter.default.addObserver(self,
                                              selector: #selector(handleInterruption),
                                              name: AVAudioSession.interruptionNotification,
@@ -67,7 +71,13 @@ class CustomMediaRecorder:NSObject {
                                              selector: #selector(handleMediaServicesReset),
                                              name: AVAudioSession.mediaServicesWereResetNotification,
                                              object: AVAudioSession.sharedInstance())
-        
+    }
+    
+    /**
+     * Configure the audio session for recording
+     * Returns true if configuration succeeded, false otherwise
+     */
+    private func setupAudioSession() -> Bool {
         do {
             recordingSession = AVAudioSession.sharedInstance()
             originalRecordingSessionCategory = recordingSession.category
@@ -84,16 +94,41 @@ class CustomMediaRecorder:NSObject {
             // Set audio session priority to high
             try AVAudioSession.sharedInstance().setPreferredIOBufferDuration(0.005)
             
-            audioFilePath = getFileUrl(
-                at: "\(UUID().uuidString).aac",
-                in: directory
-            )
-            
             // Check if microphone is available
             guard recordingSession.isInputAvailable else {
                 cleanup()
                 return false
             }
+            
+            return true
+        } catch {
+            print("Error setting up audio session: \(error.localizedDescription)")
+            cleanup()
+            return false
+        }
+    }
+
+    public func startRecording(directory: String?) -> Bool {
+        // Set up notification observers
+        setupNotificationObservers()
+        
+        // Configure audio session
+        if !setupAudioSession() {
+            return false
+        }
+        
+        do {
+            // Create new file for the original recording
+            audioFilePath = getFileUrl(
+                at: "\(UUID().uuidString).aac",
+                in: directory
+            )
+            
+            // Store as the original file URL
+            originalFileURL = audioFilePath
+            
+            // Reset segments list
+            tempRecordingSegments = []
             
             audioRecorder = try AVAudioRecorder(url: audioFilePath, settings: settings)
             audioRecorder.delegate = self
@@ -117,33 +152,27 @@ class CustomMediaRecorder:NSObject {
             return false
         }
         
-        // Store the previous file URL for later merging
-        self.previousFileURL = prevFileURL
+        // Store the original file URL - this is what we'll always return
+        originalFileURL = prevFileURL
         
-        // Calculate and store the previous file duration
-        let prevAsset = AVURLAsset(url: prevFileURL)
-        self.previousFileDuration = CMTimeGetSeconds(prevAsset.duration)
+        // Look for any existing temporary files from previous continuations
+        findExistingTempSegments(forOriginalFile: prevFileURL)
         
+        // Setup notification observers
+        setupNotificationObservers()
+            
         // Setup recording session
-        if !setupRecordingSession() {
+        if !setupAudioSession() {
             return false
         }
         
-        // Create a new recording file path for the continuation
-        let audioFileName = "recording_continued_\(Date().timeIntervalSince1970).m4a"
-        let documentsDirectory = getDocumentsDirectory(directory)
-        audioFilePath = documentsDirectory.appendingPathComponent(audioFileName)
-        
-        // Setup recorder for a new recording
-        let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: 44100.0,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-        ]
+        // CHANGE: Use the more persistent location for temp segments
+        let tempRecordingPath = getTempSegmentURL()
+        currentTempRecordingPath = tempRecordingPath
         
         do {
-            audioRecorder = try AVAudioRecorder(url: audioFilePath!, settings: settings)
+            // Set up recorder to record to the temporary file
+            audioRecorder = try AVAudioRecorder(url: tempRecordingPath, settings: settings)
             audioRecorder.delegate = self
             audioRecorder.isMeteringEnabled = true
             
@@ -151,6 +180,13 @@ class CustomMediaRecorder:NSObject {
                 audioRecorder.record(forDuration: 14400) // 4 hours max
                 status = CurrentRecordingStatus.RECORDING
                 self.onStatusChange?(status)
+                
+                // Add this temp file to our list to track it
+                tempRecordingSegments.append(tempRecordingPath)
+                
+                // Save segments list for recovery after app restart
+                saveTempSegmentsList()
+                
                 return true
             } else {
                 cleanup()
@@ -163,33 +199,117 @@ class CustomMediaRecorder:NSObject {
         }
     }
     
+    // Find any existing temporary segments from previous recordings
+    private func findExistingTempSegments(forOriginalFile originalFile: URL) {
+        tempRecordingSegments = []
+        
+        // Try to load temp segments from UserDefaults
+        if let userDefaultsKey = getTempSegmentsKey(forFile: originalFile),
+           let savedSegmentsPaths = UserDefaults.standard.array(forKey: userDefaultsKey) as? [String] {
+            
+            for segmentPath in savedSegmentsPaths {
+                let segmentURL = URL(fileURLWithPath: segmentPath)
+                
+                // Only add if file exists
+                if FileManager.default.fileExists(atPath: segmentPath) {
+                    tempRecordingSegments.append(segmentURL)
+                    print("Found existing temp segment: \(segmentPath)")
+                }
+            }
+        }
+    }
+    
+    // Save the current temp segments list to UserDefaults
+    private func saveTempSegmentsList() {
+        guard let originalFile = originalFileURL else { return }
+        
+        let segmentPaths = tempRecordingSegments.map { $0.path }
+        if let userDefaultsKey = getTempSegmentsKey(forFile: originalFile) {
+            UserDefaults.standard.set(segmentPaths, forKey: userDefaultsKey)
+            UserDefaults.standard.synchronize()
+            print("Saved \(segmentPaths.count) temp segments for recovery")
+        }
+    }
+    
+    // Generate a consistent key for UserDefaults based on file path
+    private func getTempSegmentsKey(forFile fileURL: URL) -> String? {
+        // Use the filename as the key basis
+        let filename = fileURL.lastPathComponent
+        return "voice_recorder_segments_\(filename)"
+    }
+    
+    // Clear temp segments list from UserDefaults
+    private func clearTempSegmentsList() {
+        guard let originalFile = originalFileURL,
+              let userDefaultsKey = getTempSegmentsKey(forFile: originalFile) else { return }
+        
+        UserDefaults.standard.removeObject(forKey: userDefaultsKey)
+        UserDefaults.standard.synchronize()
+    }
+    
     public func stopRecording() {
         if audioRecorder != nil {
+            // Get the current temp recording path
+            if let currentTemp = currentTempRecordingPath {
+                // Add to segments if not already there
+                if !tempRecordingSegments.contains(currentTemp) {
+                    tempRecordingSegments.append(currentTemp)
+                }
+            }
+            
+            // Stop the recording
             audioRecorder.stop()
             
-            // If we have a previous file to merge
-            if let prevURL = previousFileURL, let currentURL = audioFilePath {
+            // If we have an original file and segments to merge
+            if let originalFile = originalFileURL, !tempRecordingSegments.isEmpty {
                 // Create a semaphore to wait for the merge to complete
                 let semaphore = DispatchSemaphore(value: 0)
                 
-                mergeAudioFiles(firstFileURL: prevURL, secondFileURL: currentURL) { [weak self] mergedFileURL in
-                    if let mergedURL = mergedFileURL {
-                        // Replace our current audio file path with the merged one
-                        self?.audioFilePath = mergedURL
-                        print("Successfully merged audio files to: \(mergedURL.path)")
-                    } else {
-                        print("Failed to merge audio files")
+                print("Merging \(tempRecordingSegments.count) segments into \(originalFile.path)")
+                
+                // If the original file doesn't exist, copy the first segment to its location
+                if !FileManager.default.fileExists(atPath: originalFile.path) {
+                    do {
+                        if let firstSegment = tempRecordingSegments.first {
+                            try FileManager.default.copyItem(at: firstSegment, to: originalFile)
+                            print("Created original file from first segment")
+                            
+                            // Remove the first segment from the list
+                            tempRecordingSegments.removeFirst()
+                        }
+                    } catch {
+                        print("Error creating original file: \(error)")
                     }
-                    // Signal completion
-                    semaphore.signal()
                 }
                 
-                // Wait for a reasonable amount of time for the merge to complete
-                // This ensures getOutputFile() returns the correct file path
-                let timeout = DispatchTime.now() + 10.0 // 10 second timeout
-                if semaphore.wait(timeout: timeout) == .timedOut {
-                    print("Warning: Audio file merge timed out")
+                // If we still have segments to merge
+                if !tempRecordingSegments.isEmpty {
+                    mergeSegmentsWithFile(originalFile: originalFile, segments: tempRecordingSegments) { success in
+                        if success {
+                            print("Successfully merged all segments into original file")
+                        } else {
+                            print("Failed to merge some segments")
+                        }
+                        
+                        // Remove temp files regardless of merge result
+                        self.cleanupTempFiles()
+                        
+                        // Signal completion
+                        semaphore.signal()
+                    }
+                    
+                    // Wait for a reasonable amount of time for the merge to complete
+                    let timeout = DispatchTime.now() + 15.0 // 15 second timeout
+                    if semaphore.wait(timeout: timeout) == .timedOut {
+                        print("Warning: Audio file merge timed out")
+                    }
+                } else {
+                    // No segments to merge, just clean up
+                    cleanupTempFiles()
                 }
+                
+                // Clear the segments list from UserDefaults
+                clearTempSegmentsList()
             }
             
             // Clean up resources
@@ -197,95 +317,113 @@ class CustomMediaRecorder:NSObject {
         }
     }
     
-    // Add a method to merge audio files
-    private func mergeAudioFiles(firstFileURL: URL, secondFileURL: URL, completion: @escaping (URL?) -> Void) {
+    // Clean up any temporary files
+    private func cleanupTempFiles() {
+        for tempFile in tempRecordingSegments {
+            do {
+                if FileManager.default.fileExists(atPath: tempFile.path) {
+                    try FileManager.default.removeItem(at: tempFile)
+                    print("Removed temp file: \(tempFile.path)")
+                }
+            } catch {
+                print("Error removing temp file: \(error)")
+            }
+        }
+        tempRecordingSegments = []
+    }
+    
+    // Merge multiple segments with the original file
+    private func mergeSegmentsWithFile(originalFile: URL, segments: [URL], completion: @escaping (Bool) -> Void) {
+        // Only proceed if there are actually segments to merge
+        if segments.isEmpty {
+            completion(true)
+            return
+        }
+        
         let composition = AVMutableComposition()
-        
-        // Get audio from the first file
-        guard let firstAsset = try? AVURLAsset(url: firstFileURL) else {
-            print("Could not load first asset")
-            completion(nil)
-            return
-        }
-        
-        // Get audio from the second file
-        guard let secondAsset = try? AVURLAsset(url: secondFileURL) else {
-            print("Could not load second asset")
-            completion(nil)
-            return
-        }
-        
-        // Create a composition track for audio
         guard let compositionTrack = composition.addMutableTrack(
             withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
-            print("Could not create composition track")
-            completion(nil)
+            completion(false)
             return
         }
         
-        // Add the first file's audio
+        var currentPosition = CMTime.zero
+        
         do {
-            guard let firstTrack = firstAsset.tracks(withMediaType: .audio).first else {
-                print("No audio track in first file")
-                completion(nil)
-                return
+            // Add original file if it exists and has content
+            if FileManager.default.fileExists(atPath: originalFile.path),
+               let attributes = try? FileManager.default.attributesOfItem(atPath: originalFile.path),
+               let fileSize = attributes[.size] as? UInt64, fileSize > 0 {
+                
+                let originalAsset = AVURLAsset(url: originalFile)
+                if let originalTrack = originalAsset.tracks(withMediaType: .audio).first {
+                    try compositionTrack.insertTimeRange(
+                        CMTimeRange(start: .zero, duration: originalAsset.duration),
+                        of: originalTrack,
+                        at: currentPosition
+                    )
+                    currentPosition = CMTimeAdd(currentPosition, originalAsset.duration)
+                }
             }
             
-            let timeRange = CMTimeRange(
-                start: CMTime.zero,
-                duration: firstAsset.duration
-            )
-            
-            try compositionTrack.insertTimeRange(timeRange, of: firstTrack, at: CMTime.zero)
-            
-            // Add the second file's audio
-            guard let secondTrack = secondAsset.tracks(withMediaType: .audio).first else {
-                print("No audio track in second file")
-                completion(nil)
-                return
+            // Add all segment files sequentially
+            for segmentURL in segments where FileManager.default.fileExists(atPath: segmentURL.path) {
+                let segmentAsset = AVURLAsset(url: segmentURL)
+                if let segmentTrack = segmentAsset.tracks(withMediaType: .audio).first {
+                    try compositionTrack.insertTimeRange(
+                        CMTimeRange(start: .zero, duration: segmentAsset.duration),
+                        of: segmentTrack,
+                        at: currentPosition
+                    )
+                    currentPosition = CMTimeAdd(currentPosition, segmentAsset.duration)
+                }
             }
             
-            let secondTimeRange = CMTimeRange(
-                start: CMTime.zero,
-                duration: secondAsset.duration
-            )
+            // Export directly to the target file
+            let tempExportURL = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("merged_\(Date().timeIntervalSince1970).m4a")
             
-            try compositionTrack.insertTimeRange(
-                secondTimeRange,
-                of: secondTrack,
-                at: firstAsset.duration
-            )
-            
-            // Create a temporary file to export to
-            let tempDirectoryURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            let outputURL = tempDirectoryURL.appendingPathComponent("merged_recording_\(Date().timeIntervalSince1970).m4a")
-            
-            // Setup exporter
             guard let exporter = AVAssetExportSession(
                 asset: composition,
                 presetName: AVAssetExportPresetAppleM4A
             ) else {
-                print("Could not create export session")
-                completion(nil)
+                completion(false)
                 return
             }
             
-            exporter.outputURL = outputURL
+            exporter.outputURL = tempExportURL
             exporter.outputFileType = .m4a
             
-            // Export the file
+            // Export synchronously to ensure completion
+            let exportGroup = DispatchGroup()
+            exportGroup.enter()
+            
             exporter.exportAsynchronously {
-                switch exporter.status {
-                case .completed:
-                    completion(outputURL)
-                default:
-                    print("Export failed: \(exporter.error?.localizedDescription ?? "Unknown error")")
-                    completion(nil)
+                defer { exportGroup.leave() }
+                
+                if exporter.status == .completed {
+                    do {
+                        // Replace original with merged file
+                        if FileManager.default.fileExists(atPath: originalFile.path) {
+                            try FileManager.default.removeItem(at: originalFile)
+                        }
+                        try FileManager.default.moveItem(at: tempExportURL, to: originalFile)
+                    } catch {
+                        print("Error replacing file: \(error)")
+                        completion(false)
+                        return
+                    }
+                    completion(true)
+                } else {
+                    completion(false)
                 }
             }
+            
+            // Wait for export to complete with a timeout
+            _ = exportGroup.wait(timeout: .now() + 25)
         } catch {
-            print("Error merging files: \(error)")
-            completion(nil)
+            print("Error in merge: \(error)")
+            completion(false)
         }
     }
     
@@ -302,12 +440,17 @@ class CustomMediaRecorder:NSObject {
             }
             originalRecordingSessionCategory = nil
             status = CurrentRecordingStatus.NONE
+            currentTempRecordingPath = nil
         } catch {
             print("Error during cleanup: \(error)")
         }
     }
     
     public func getOutputFile() -> URL? {
+        // Always return the original file path
+        if let originalFile = originalFileURL {
+            return originalFile
+        }
         return audioFilePath
     }
     
@@ -343,6 +486,20 @@ class CustomMediaRecorder:NSObject {
  
     public func removeRecording(fileUrl: URL) {
         do {
+            // Also clean up any temporary segments
+            if let userDefaultsKey = getTempSegmentsKey(forFile: fileUrl) {
+                if let savedSegmentsPaths = UserDefaults.standard.array(forKey: userDefaultsKey) as? [String] {
+                    for segmentPath in savedSegmentsPaths {
+                        if FileManager.default.fileExists(atPath: segmentPath) {
+                            try FileManager.default.removeItem(atPath: segmentPath)
+                            print("Removed segment file: \(segmentPath)")
+                        }
+                    }
+                }
+                UserDefaults.standard.removeObject(forKey: userDefaultsKey)
+            }
+            
+            // Remove the main file
             if FileManager.default.fileExists(atPath: fileUrl.path) {
                 try FileManager.default.removeItem(atPath: fileUrl.path)
             }
@@ -356,53 +513,144 @@ class CustomMediaRecorder:NSObject {
     }
 
     private func setupRecordingSession() -> Bool {
-        // Set up all possible interruption observers
-        NotificationCenter.default.addObserver(self,
-                                            selector: #selector(handleInterruption),
-                                            name: AVAudioSession.interruptionNotification,
-                                            object: AVAudioSession.sharedInstance())
-        NotificationCenter.default.addObserver(self,
-                                            selector: #selector(handleSecondaryAudio),
-                                            name: AVAudioSession.silenceSecondaryAudioHintNotification,
-                                            object: AVAudioSession.sharedInstance())
-        NotificationCenter.default.addObserver(self,
-                                            selector: #selector(handleMediaServicesReset),
-                                            name: AVAudioSession.mediaServicesWereResetNotification,
-                                            object: AVAudioSession.sharedInstance())
+        // Set up notification observers
+        setupNotificationObservers()
         
-        do {
-            recordingSession = AVAudioSession.sharedInstance()
-            originalRecordingSessionCategory = recordingSession.category
-            
-            // Configure for highest priority recording
-            try recordingSession.setCategory(.playAndRecord,
-                                        mode: .default,
-                                        options: [.allowBluetooth, .duckOthers, .defaultToSpeaker, .mixWithOthers])
-            try recordingSession.setActive(true, options: .notifyOthersOnDeactivation)
-            if #available(iOS 14.5, *) {
-                try recordingSession.setPrefersNoInterruptionsFromSystemAlerts(true)
-            }
-            
-            // Set audio session priority to high
-            try AVAudioSession.sharedInstance().setPreferredIOBufferDuration(0.005)
-            
-            // Check if microphone is available
-            guard recordingSession.isInputAvailable else {
-                cleanup()
-                return false
-            }
-            
-            return true
-        } catch {
-            cleanup()
-            return false
-        }
+        // Configure audio session
+        return setupAudioSession()
     }
 
     private func getDocumentsDirectory(_ directory: String?) -> URL {
         return getDirectory(directory: directory)
     }
+
+    /**
+     * Get information about an existing recording file without having to continue and stop it
+     * This allows accessing a recording file directly from its path
+     * @param filePath: The path to the recording file
+     * @return: A tuple containing (file exists, file URL, duration in ms, has temp segments that need merging)
+     */
+    public func getRecordingInfo(filePath: String) -> (exists: Bool, fileURL: URL?, durationMs: Int, hasSegments: Bool) {
+        // Create URL from file path
+        let fileURL: URL
+        if filePath.hasPrefix("file://") {
+            // Handle file:// URLs properly
+            guard let url = URL(string: filePath) else {
+                return (false, nil, 0, false)
+            }
+            fileURL = url
+        } else {
+            fileURL = URL(fileURLWithPath: filePath)
+        }
+        
+        // Check if file exists
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            return (false, nil, 0, false)
+        }
+        
+        // Get duration
+        let durationMs = Int(CMTimeGetSeconds(AVURLAsset(url: fileURL).duration) * 1000)
+        
+        // Check for temporary segments
+        let userDefaultsKey = getTempSegmentsKey(forFile: fileURL)
+        var hasSegments = false
+        if let key = userDefaultsKey,
+           let savedSegmentsPaths = UserDefaults.standard.array(forKey: key) as? [String],
+           !savedSegmentsPaths.isEmpty {
+            
+            // Check if any segments actually exist
+            for segmentPath in savedSegmentsPaths {
+                if FileManager.default.fileExists(atPath: segmentPath) {
+                    hasSegments = true
+                    break
+                }
+            }
+        }
+        
+        return (true, fileURL, durationMs, hasSegments)
+    }
     
+    /**
+     * Finalize a recording by merging any temporary segments with the main file
+     * This allows finalizing a recording without continuing and stopping it
+     * @param filePath: The path to the recording file
+     * @return: A tuple containing (success, fileURL, durationMs)
+     */
+    public func finalizeRecording(filePath: String) -> (success: Bool, fileURL: URL?, durationMs: Int) {
+        // Parse the file URL
+        let fileURL: URL
+        if filePath.hasPrefix("file://") {
+            guard let url = URL(string: filePath) else {
+                return (false, nil, 0)
+            }
+            fileURL = url
+        } else {
+            fileURL = URL(fileURLWithPath: filePath)
+        }
+        
+        // Check if file exists
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            return (false, nil, 0)
+        }
+        
+        // Set as original file
+        originalFileURL = fileURL
+        
+        // Find temporary segments
+        findExistingTempSegments(forOriginalFile: fileURL)
+        
+        // If no segments, just return file info with single duration calculation
+        if tempRecordingSegments.isEmpty {
+            let durationMs = Int(CMTimeGetSeconds(AVURLAsset(url: fileURL).duration) * 1000)
+            return (true, fileURL, durationMs)
+        }
+        
+        // Create a semaphore to wait for the merge
+        let semaphore = DispatchSemaphore(value: 0)
+        var mergingSucceeded = false
+        var finalDurationMs = 0
+        
+        // Perform merge directly (not on a background thread, to ensure completion)
+        mergeSegmentsWithFile(originalFile: fileURL, segments: tempRecordingSegments) { success in
+            mergingSucceeded = success
+            
+            // Calculate duration once after merge is complete
+            if success {
+                finalDurationMs = Int(CMTimeGetSeconds(AVURLAsset(url: fileURL).duration) * 1000)
+            }
+            
+            // Clean up temp files
+            self.cleanupTempFiles()
+            self.clearTempSegmentsList()
+            
+            // Signal completion
+            semaphore.signal()
+        }
+        
+        // Wait for completion with a reasonable timeout (30 seconds or more if needed)
+        let timeout = DispatchTime.now() + 30.0
+        let timeoutOccurred = semaphore.wait(timeout: timeout) == .timedOut
+        
+        if timeoutOccurred {
+            return (false, fileURL, 0)
+        }
+        
+        return (mergingSucceeded, fileURL, finalDurationMs)
+    }
+
+    // Update the function that gets a temporary file name to use a more persistent directory
+    private func getTempSegmentURL() -> URL {
+        // CHANGE: Instead of using the temporary directory, use a subdirectory in Documents
+        let documentsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let tempSegmentsDir = documentsDir.appendingPathComponent("VoiceRecorderSegments", isDirectory: true)
+        
+        // Create the directory if it doesn't exist
+        if !FileManager.default.fileExists(atPath: tempSegmentsDir.path) {
+            try? FileManager.default.createDirectory(at: tempSegmentsDir, withIntermediateDirectories: true)
+        }
+        
+        return tempSegmentsDir.appendingPathComponent("temp_segment_\(Date().timeIntervalSince1970).aac")
+    }
 }
 
 extension CustomMediaRecorder:AVAudioRecorderDelegate {
@@ -458,10 +706,10 @@ extension CustomMediaRecorder:AVAudioRecorderDelegate {
     // Helper to attempt resuming recording
     private func tryResumeRecording(attempt: Int = 1) {
         if status == .PAUSED && canRecord() {
-                let isResumed = resumeRecording()
-                if attempt < 3 && !isResumed {
-                    let delay = pow(2.0, Double(attempt)) * 0.5
-                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            let isResumed = resumeRecording()
+            if attempt < 3 && !isResumed {
+                let delay = pow(2.0, Double(attempt)) * 0.5
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                     self.tryResumeRecording(attempt: attempt + 1)
                 }
             }

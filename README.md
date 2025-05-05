@@ -177,7 +177,252 @@ VoiceRecorder.getCurrentStatus()
 .then((result: CurrentRecordingStatus) => console.log(result.status))
 .catch(error => console.log(error))
 
+## Handling Recordings: `continueRecording` and `finalizeRecording`
+
+The Voice Recorder plugin provides two specialized methods for managing audio recordings across app sessions and device states:
+
+- **continueRecording**: Resumes recording from a previous file when the app has been closed or restarted
+- **finalizeRecording**: Merges any temporary segments without needing to continue or stop recording
+
+### Method Details
+
+#### `continueRecording(options: { filePath: string; directory?: string })`
+
+**Purpose**: 
+This method allows you to continue recording from a previous session, even if the app was closed or restarted. It's particularly useful for implementing robust recording experiences that can survive app termination or crashes.
+
+**Parameters**:
+- `filePath`: Path to the previous recording
+- `directory` (optional): Directory to store the new segment (defaults to "DOCUMENTS")
+
+**Returns**: 
+- A Promise with `RecordingData` containing:
+  - `filePath`: Path to the original file
+  - `mimeType`: MIME type of the recording (usually "audio/aac")
+  - `msDuration`: Duration in milliseconds
+
+**Platform-specific behavior**:
+- **Android**: Creates a new segment file that will be merged with the original file later. If existing segments are found, finalizes them first before starting a new segment.
+- **iOS**: Continues the recording from the previous session, handling any segments that need to be appended.
+- **Web**: Loads the existing recording (if found) and starts a new recording session that merges with the previous data.
+
+**Example**:
+```typescript
+import { VoiceRecorder } from 'capacitor-voice-recorder';
+
+async function continueExistingRecording(filePath: string) {
+  try {
+    // Get recording information to check if it exists
+    const recordingInfo = await VoiceRecorder.getRecordingInfo({ filePath });
+    
+    if (recordingInfo.value.exists) {
+      // Continue recording from the existing file
+      const result = await VoiceRecorder.continueRecording({
+        filePath,
+        directory: 'DOCUMENTS'
+      });
+      
+      console.log(`Continuing recording: ${result.value.filePath}`);
+      return result.value.filePath;
+    } else {
+      console.error('Recording not found');
+      return null;
+    }
+  } catch (error) {
+    console.error('Error continuing recording:', error);
+    return null;
+  }
+}
 ```
+
+#### `finalizeRecording(options: { filePath: string })`
+
+**Purpose**: 
+This method merges any temporary recording segments without requiring microphone access. It's useful for cleaning up recordings after app crashes or when resuming from background state.
+
+**Parameters**:
+- `filePath`: Path to the original recording file
+
+**Returns**: 
+- A Promise with `RecordingData` containing:
+  - `filePath`: Path to the finalized file
+  - `mimeType`: MIME type of the recording (usually "audio/aac")
+  - `msDuration`: Duration in milliseconds
+
+**Platform-specific behavior**:
+- **Android**: Checks for existing segments associated with the file and merges them with the original file.
+- **iOS**: Finalizes any pending segments and creates a complete audio file.
+- **Web**: Ensures the recording is properly saved in IndexedDB.
+
+**Example**:
+```typescript
+import { VoiceRecorder } from 'capacitor-voice-recorder';
+
+async function finalizeExistingRecording(filePath: string) {
+  try {
+    // Check if the recording has segments that need to be finalized
+    const recordingInfo = await VoiceRecorder.getRecordingInfo({ filePath });
+    
+    if (recordingInfo.value.hasSegments) {
+      console.log('Recording has segments, finalizing...');
+      const result = await VoiceRecorder.finalizeRecording({ filePath });
+      
+      console.log(`Finalized recording: ${result.value.filePath}`);
+      console.log(`Duration: ${result.value.msDuration}ms`);
+      return result.value.filePath;
+    } else {
+      console.log('No segments to finalize');
+      return filePath;
+    }
+  } catch (error) {
+    console.error('Error finalizing recording:', error);
+    return null;
+  }
+}
+```
+
+### Best Practices for Recording Across App Lifecycles
+
+#### 1. Save Recording Information
+
+Always store the path to your current recording in persistent storage:
+
+```typescript
+// When starting a new recording
+async function startAndSaveRecording() {
+  const result = await VoiceRecorder.startRecording();
+  
+  // Save path to localStorage or another persistence mechanism
+  localStorage.setItem('currentRecordingPath', result.value.filePath);
+}
+```
+
+#### 2. Handle App Restarts
+
+When your app restarts, check for an existing recording:
+
+```typescript
+async function checkForExistingRecording() {
+  const savedPath = localStorage.getItem('currentRecordingPath');
+  
+  if (savedPath) {
+    try {
+      const info = await VoiceRecorder.getRecordingInfo({ filePath: savedPath });
+      
+      if (info.value.exists) {
+        // Recording exists, you can either continue it or finalize it
+        return savedPath;
+      }
+    } catch (error) {
+      console.error('Error checking recording:', error);
+    }
+  }
+  
+  return null;
+}
+```
+
+#### 3. Implement Proper Cleanup
+
+After successfully finalizing a recording:
+
+```typescript
+async function cleanupAfterRecording(filePath: string) {
+  try {
+    await finalizeExistingRecording(filePath);
+    
+    // Clear the saved path
+    localStorage.removeItem('currentRecordingPath');
+  } catch (error) {
+    console.error('Error cleaning up recording:', error);
+  }
+}
+```
+
+#### 4. Handle App Closure and Memory Pressure Situations
+
+The `continueRecording` and `finalizeRecording` methods are primarily designed for scenarios where:
+- The app was completely closed (not just backgrounded)
+- The app was terminated by the OS due to memory pressure
+- The app crashed during recording
+- The device was restarted
+
+Here's how to handle these scenarios:
+
+```typescript
+import { App } from '@capacitor/app';
+
+// When app starts, check for interrupted recordings
+document.addEventListener('deviceready', async () => {
+  const savedPath = localStorage.getItem('currentRecordingPath');
+  if (savedPath) {
+    try {
+      // Check if the recording exists and has segments
+      const info = await VoiceRecorder.getRecordingInfo({ filePath: savedPath });
+      
+      if (info.value.exists) {
+        // Ask the user if they want to continue the interrupted recording
+        const shouldContinue = await askUserToContinueRecording();
+        
+        if (shouldContinue) {
+          // Continue the recording from where it left off
+          await VoiceRecorder.continueRecording({
+            filePath: savedPath
+          });
+        } else {
+          // Just finalize any segments that might exist
+          await VoiceRecorder.finalizeRecording({
+            filePath: savedPath
+          });
+          // Clear the path since we're done with this recording
+          localStorage.removeItem('currentRecordingPath');
+        }
+      }
+    } catch (error) {
+      console.error('Error handling recording recovery:', error);
+    }
+  }
+});
+
+// For regular backgrounding/foregrounding
+App.addListener('appStateChange', ({ isActive }) => {
+  const currentRecordingPath = localStorage.getItem('currentRecordingPath');
+  
+  if (!isActive && currentRecordingPath) {
+    // App going to background - pause recording
+    VoiceRecorder.pauseRecording();
+  } else if (isActive && currentRecordingPath) {
+    // App coming to foreground - check status and resume if needed
+    VoiceRecorder.getCurrentStatus().then(status => {
+      if (status.status === 'PAUSED') {
+        VoiceRecorder.resumeRecording();
+      }
+    });
+  }
+});
+```
+
+Remember that `continueRecording` is especially useful after complete app closure. When the app is merely backgrounded (not terminated), you usually just need to pause/resume recording rather than using these specialized methods.
+
+### Important Considerations
+
+1. **Platform differences**:
+   - Android uses a segment-based approach for continuing recordings
+   - iOS handles continuations differently but provides consistent results
+   - Web implementation uses IndexedDB for storage and has slightly different behavior
+
+2. **File paths**:
+   - Always use the file paths returned by the plugin methods
+   - Do not construct file paths manually as they differ across platforms
+
+3. **Error handling**:
+   - Always implement proper error handling for recording operations
+   - Check recording status before continuing or finalizing
+
+4. **App lifecycle**:
+   - Consider implementing handlers for app lifecycle events to ensure robust recording
+   - Use `finalizeRecording` when your app has been terminated if possible
+   - Use `continueRecording` when resuming a recording after app closure or crash
 
 ## Format and Mime type
 

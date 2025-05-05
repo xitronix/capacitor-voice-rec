@@ -155,6 +155,61 @@ public class VoiceRecorder: CAPPlugin {
         call.resolve(ResponseGenerator.statusResponse(status))
     }
 
+    /**
+     * Get information about a recording file without having to continue/stop it
+     * This allows apps to directly access recording information even if the microphone is busy
+     */
+    @objc func getRecordingInfo(_ call: CAPPluginCall) {
+        guard let filePath = call.getString("filePath") else {
+            call.reject("Missing file path")
+            return
+        }
+        
+        let (exists, fileURL, durationMs, hasSegments) = customMediaRecorder.getRecordingInfo(filePath: filePath)
+        
+        if !exists || fileURL == nil {
+            call.reject("Recording file not found or invalid")
+            return
+        }
+        
+        let recordData = RecordData(
+            mimeType: "audio/aac",
+            msDuration: durationMs,
+            filePath: fileURL!.absoluteString
+        )
+        
+        var response = recordData.toDictionary()
+        response["hasSegments"] = hasSegments
+        
+        call.resolve(ResponseGenerator.dataResponse(response))
+    }
+    
+    /**
+     * Finalize a recording by merging any temporary segments without continuing/stopping it
+     * This allows apps to access and finalize recordings even if the microphone is busy
+     */
+    @objc func finalizeRecording(_ call: CAPPluginCall) {
+        guard let filePath = call.getString("filePath") else {
+            call.reject("Missing file path")
+            return
+        }
+        
+        let (success, fileURL, durationMs) = customMediaRecorder.finalizeRecording(filePath: filePath)
+        
+        if !success || fileURL == nil {
+            call.reject("Failed to finalize recording")
+            return
+        }
+        
+        let recordData = RecordData(
+            mimeType: "audio/aac",
+            msDuration: durationMs,
+            filePath: fileURL!.absoluteString
+        )
+        
+        call.resolve(ResponseGenerator.dataResponse(recordData.toDictionary()))
+    }
+
     private func doesUserGaveAudioRecordingPermission() -> Bool {
         return AVAudioSession.sharedInstance().recordPermission == AVAudioSession.RecordPermission.granted
     }
