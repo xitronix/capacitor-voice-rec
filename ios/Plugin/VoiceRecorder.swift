@@ -220,6 +220,125 @@ public class VoiceRecorder: CAPPlugin {
         }
         return Int(CMTimeGetSeconds(AVURLAsset(url: filePath!).duration) * 1000)
     }
+    
+    private var audioEngine: AVAudioEngine?
+    private var inputNode: AVAudioInputNode?
+    private var isStreaming = false
+    private var streamingSampleRate: Double = 44100
+    private var streamingChannels: UInt32 = 1
+
+    @objc func startAudioStream(_ call: CAPPluginCall) {
+        print("VoiceRecorder: startAudioStream called")
+        if isStreaming {
+            print("VoiceRecorder: Already streaming, returning failure")
+            call.resolve(ResponseGenerator.failResponse())
+            return
+        }
+
+        // Check permissions first
+        let hasPermission = doesUserGaveAudioRecordingPermission()
+        print("VoiceRecorder: Audio recording permission granted: \(hasPermission)")
+        if !hasPermission {
+            print("VoiceRecorder: Audio recording permission denied")
+            call.resolve(ResponseGenerator.failResponse())
+            return
+        }
+
+        // Get options directly from call parameters
+        streamingSampleRate = call.getDouble("sampleRate") ?? 44100
+        streamingChannels = UInt32(call.getInt("channels") ?? 1)
+        let bufferSize = UInt32(call.getInt("bufferSize") ?? 4096)
+
+        do {
+            // Setup audio session
+            let audioSession = AVAudioSession.sharedInstance()
+            print("VoiceRecorder: Setting up audio session for streaming")
+            try audioSession.setCategory(.record, mode: .measurement, options: [])
+            try audioSession.setActive(true)
+            print("VoiceRecorder: Audio session activated successfully")
+
+            // Create audio engine
+            audioEngine = AVAudioEngine()
+            inputNode = audioEngine!.inputNode
+            print("VoiceRecorder: Audio engine created")
+
+            // Configure input format
+            let inputFormat = inputNode!.outputFormat(forBus: 0)
+            let recordingFormat = AVAudioFormat(
+                standardFormatWithSampleRate: streamingSampleRate,
+                channels: streamingChannels
+            )!
+            print("VoiceRecorder: Input format configured - sampleRate: \(streamingSampleRate), channels: \(streamingChannels)")
+
+            // Install tap on input node
+            inputNode!.installTap(onBus: 0, bufferSize: bufferSize, format: inputFormat) { [weak self] (buffer, time) in
+                self?.processAudioBuffer(buffer, time: time)
+            }
+            print("VoiceRecorder: Audio tap installed")
+
+            // Start audio engine
+            try audioEngine!.start()
+            isStreaming = true
+            print("VoiceRecorder: Audio engine started successfully")
+
+            call.resolve(ResponseGenerator.successResponse())
+        } catch {
+            print("VoiceRecorder: Error starting audio stream: \(error)")
+            call.resolve(ResponseGenerator.failResponse())
+        }
+    }
+
+    private func processAudioBuffer(_ buffer: AVAudioPCMBuffer, time: AVAudioTime) {
+        guard let channelData = buffer.floatChannelData else { 
+            print("VoiceRecorder: No channel data in buffer")
+            return 
+        }
+        
+        let frameLength = Int(buffer.frameLength)
+        let audioData = Array(UnsafeBufferPointer(start: channelData[0], count: frameLength))
+
+        // Debug: Log audio data occasionally
+        if Int.random(in: 1...100) == 1 { // ~1% of the time
+            let avgLevel = audioData.reduce(0, +) / Float(audioData.count)
+            print("VoiceRecorder: Processing \(frameLength) samples, avg level: \(avgLevel)")
+        }
+
+        // Send data to JavaScript
+        let data: [String: Any] = [
+            "audioData": audioData,
+            "sampleRate": streamingSampleRate,
+            "timestamp": Date().timeIntervalSince1970 * 1000, // milliseconds
+            "channels": streamingChannels
+        ]
+
+        notifyListeners("audioData", data: data)
+    }
+
+    @objc func stopAudioStream(_ call: CAPPluginCall) {
+        do {
+            isStreaming = false
+            
+            if let inputNode = inputNode {
+                inputNode.removeTap(onBus: 0)
+            }
+            
+            audioEngine?.stop()
+            audioEngine = nil
+            inputNode = nil
+
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setActive(false)
+
+            call.resolve(ResponseGenerator.successResponse())
+        } catch {
+            call.resolve(ResponseGenerator.failResponse())
+        }
+    }
+
+    @objc func getStreamingStatus(_ call: CAPPluginCall) {
+        let result = ["status": isStreaming ? "STREAMING" : "STOPPED"]
+        call.resolve(result)
+    }
 }
 
 

@@ -507,4 +507,126 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
     public static CustomMediaRecorder getActiveRecorder() {
         return activeRecorder;
     }
+
+    private android.media.AudioRecord audioRecord;
+    private Thread streamingThread;
+    private boolean isStreaming = false;
+    private int streamingSampleRate = 44100;
+    private int streamingChannelConfig = android.media.AudioFormat.CHANNEL_IN_MONO;
+    private int streamingAudioFormat = android.media.AudioFormat.ENCODING_PCM_16BIT;
+    private int streamingBufferSize;
+
+    @PluginMethod
+    public void startAudioStream(PluginCall call) {
+        if (isStreaming) {
+            call.resolve(ResponseGenerator.failResponse());
+            return;
+        }
+
+        // Check permissions first
+        if (getPermissionState(RECORD_AUDIO_ALIAS) != PermissionState.GRANTED) {
+            call.resolve(ResponseGenerator.failResponse());
+            return;
+        }
+
+        // Get options directly from call parameters
+        streamingSampleRate = call.getInt("sampleRate", 44100);
+        int channels = call.getInt("channels", 1);
+        int requestedBufferSize = call.getInt("bufferSize", 4096);
+
+        streamingChannelConfig = channels == 1 ? 
+            android.media.AudioFormat.CHANNEL_IN_MONO : 
+            android.media.AudioFormat.CHANNEL_IN_STEREO;
+
+        streamingBufferSize = Math.max(
+            requestedBufferSize * 2, // Convert to bytes (16-bit samples)
+            android.media.AudioRecord.getMinBufferSize(
+                streamingSampleRate, 
+                streamingChannelConfig, 
+                streamingAudioFormat
+            )
+        );
+
+        try {
+            audioRecord = new android.media.AudioRecord(
+                android.media.MediaRecorder.AudioSource.MIC,
+                streamingSampleRate,
+                streamingChannelConfig,
+                streamingAudioFormat,
+                streamingBufferSize
+            );
+
+            if (audioRecord.getState() != android.media.AudioRecord.STATE_INITIALIZED) {
+                call.resolve(ResponseGenerator.failResponse());
+                return;
+            }
+
+            audioRecord.startRecording();
+            isStreaming = true;
+
+            // Start streaming thread
+            streamingThread = new Thread(this::streamAudioData);
+            streamingThread.start();
+
+            call.resolve(ResponseGenerator.successResponse());
+        } catch (Exception e) {
+            Log.e(TAG, "Error starting audio stream", e);
+            call.resolve(ResponseGenerator.failResponse());
+        }
+    }
+
+    private void streamAudioData() {
+        short[] audioBuffer = new short[streamingBufferSize / 2]; // 16-bit samples
+        
+        while (isStreaming && audioRecord != null) {
+            int samplesRead = audioRecord.read(audioBuffer, 0, audioBuffer.length);
+            
+            if (samplesRead > 0) {
+                // Convert to float array for consistency with web
+                float[] floatBuffer = new float[samplesRead];
+                for (int i = 0; i < samplesRead; i++) {
+                    floatBuffer[i] = audioBuffer[i] / 32768.0f; // Normalize to [-1, 1]
+                }
+
+                // Send data to JavaScript
+                JSObject data = new JSObject();
+                data.put("audioData", floatBuffer);
+                data.put("sampleRate", streamingSampleRate);
+                data.put("timestamp", System.currentTimeMillis());
+                data.put("channels", streamingChannelConfig == android.media.AudioFormat.CHANNEL_IN_MONO ? 1 : 2);
+
+                notifyListeners("audioData", data);
+            }
+        }
+    }
+
+    @PluginMethod
+    public void stopAudioStream(PluginCall call) {
+        try {
+            isStreaming = false;
+            
+            if (streamingThread != null) {
+                streamingThread.interrupt();
+                streamingThread = null;
+            }
+            
+            if (audioRecord != null) {
+                audioRecord.stop();
+                audioRecord.release();
+                audioRecord = null;
+            }
+
+            call.resolve(ResponseGenerator.successResponse());
+        } catch (Exception e) {
+            Log.e(TAG, "Error stopping audio stream", e);
+            call.resolve(ResponseGenerator.failResponse());
+        }
+    }
+
+    @PluginMethod
+    public void getStreamingStatus(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("status", isStreaming ? "STREAMING" : "STOPPED");
+        call.resolve(result);
+    }
 }
