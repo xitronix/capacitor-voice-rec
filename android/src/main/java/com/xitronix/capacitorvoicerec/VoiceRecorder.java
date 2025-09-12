@@ -549,15 +549,13 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
         );
 
         try {
-            // Configure audio session for voice chat (similar to iOS setup)
+            // Configure audio session for voice chat
             AudioManager audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
             if (audioManager != null) {
-                // Set audio mode for voice communication (similar to iOS .voiceChat mode)
                 audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
-                Log.d(TAG, "Android: Set audio mode to MODE_IN_COMMUNICATION for voice chat");
             }
             
-            // Use VOICE_COMMUNICATION source for better voice chat quality (similar to iOS .voiceChat)
+            // Use VOICE_COMMUNICATION source for better voice chat quality
             audioRecord = new android.media.AudioRecord(
                 android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 streamingSampleRate,
@@ -565,8 +563,6 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
                 streamingAudioFormat,
                 streamingBufferSize
             );
-            
-            Log.d(TAG, "Android: AudioRecord created - sampleRate: " + streamingSampleRate + "Hz, channels: " + channels + ", bufferSize: " + streamingBufferSize);
 
             if (audioRecord.getState() != android.media.AudioRecord.STATE_INITIALIZED) {
                 call.resolve(ResponseGenerator.failResponse());
@@ -575,8 +571,6 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
 
             audioRecord.startRecording();
             isStreaming = true;
-            
-            Log.d(TAG, "Android: ✅ Audio streaming started successfully");
 
             // Start streaming thread
             streamingThread = new Thread(this::streamAudioData);
@@ -611,20 +605,15 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
                 float avgLevel = sum / samplesRead;
                 bufferCount++;
                 
-                // Log audio levels periodically (similar to iOS logging)
-                if (bufferCount % 20 == 0) { // Every 20 buffers
-                    Log.d(TAG, "Android: Buffer #" + bufferCount + ", " + samplesRead + " samples, avg level: " + avgLevel + ", sampleRate: " + streamingSampleRate + "Hz");
-                    
-                    if (avgLevel > 0.01f) {
-                        Log.d(TAG, "Android: 🎤 Good audio detected!");
-                        silentBufferCount = 0;
-                    } else if (avgLevel < 0.001f) {
+                // Monitor audio levels periodically
+                if (bufferCount % 100 == 0) {
+                    if (avgLevel < 0.001f) {
                         silentBufferCount++;
-                        Log.d(TAG, "Android: 🔇 Very low audio level detected (silent count: " + silentBufferCount + ")");
-                        
-                        if (silentBufferCount > 50) { // ~2.3 seconds of silence
-                            Log.w(TAG, "Android: ⚠️ Extended silence detected - check microphone input");
+                        if (silentBufferCount > 10) {
+                            Log.w(TAG, "Android: Extended silence detected - check microphone input");
                         }
+                    } else {
+                        silentBufferCount = 0;
                     }
                 }
 
@@ -655,7 +644,6 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
     @PluginMethod
     public void stopAudioStream(PluginCall call) {
         try {
-            Log.d(TAG, "Android: Stopping audio stream");
             isStreaming = false;
             
             // Reset counters
@@ -673,14 +661,11 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
                 audioRecord = null;
             }
             
-            // Reset audio mode to normal (similar to iOS cleanup)
+            // Reset audio mode to normal
             AudioManager audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
             if (audioManager != null) {
                 audioManager.setMode(AudioManager.MODE_NORMAL);
-                Log.d(TAG, "Android: Reset audio mode to MODE_NORMAL");
             }
-            
-            Log.d(TAG, "Android: ✅ Audio stream stopped successfully");
 
             call.resolve(ResponseGenerator.successResponse());
         } catch (Exception e) {

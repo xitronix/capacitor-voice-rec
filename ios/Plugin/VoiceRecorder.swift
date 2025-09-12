@@ -244,72 +244,50 @@ public class VoiceRecorder: CAPPlugin {
     private var streamingChannels: UInt32 = 1
 
     @objc func startAudioStream(_ call: CAPPluginCall) {
-        print("VoiceRecorder: startAudioStream called")
         if isStreaming {
-            print("VoiceRecorder: Already streaming, returning failure")
             call.resolve(ResponseGenerator.failResponse())
             return
         }
 
         // Check permissions first
         let hasPermission = doesUserGaveAudioRecordingPermission()
-        print("VoiceRecorder: Audio recording permission granted: \(hasPermission)")
         if !hasPermission {
-            print("VoiceRecorder: Audio recording permission denied")
             call.resolve(ResponseGenerator.failResponse())
             return
         }
 
         // Get options directly from call parameters
-        streamingSampleRate = call.getDouble("sampleRate") ?? 44100
+        streamingSampleRate = call.getDouble("sampleRate") ?? 48000
         streamingChannels = UInt32(call.getInt("channels") ?? 1)
         let bufferSize = UInt32(call.getInt("bufferSize") ?? 4096)
 
         do {
-            // Setup audio session for continuous streaming (like WebRTC)
+            // Setup audio session for voice chat
             let audioSession = AVAudioSession.sharedInstance()
-            print("VoiceRecorder: Setting up audio session for continuous streaming")
-            
-            // Use .playAndRecord for continuous audio like WebRTC calls
-            // .voiceChat mode optimized for real-time communication
-            // Options allow mixing with other audio and Bluetooth support
             try audioSession.setCategory(.playAndRecord, 
                                        mode: .voiceChat, 
                                        options: [.defaultToSpeaker, .allowBluetoothA2DP, .mixWithOthers])
-            
-            // Set preferred sample rate to match WebRTC expectations (48kHz)
             try audioSession.setPreferredSampleRate(48000)
-            
-            // Set low latency for real-time audio
-            try audioSession.setPreferredIOBufferDuration(0.005) // ~5ms latency
+            try audioSession.setPreferredIOBufferDuration(0.005)
             try audioSession.setActive(true)
-            print("VoiceRecorder: Audio session activated successfully with .playAndRecord/.voiceChat")
 
             // Create audio engine
             audioEngine = AVAudioEngine()
             inputNode = audioEngine!.inputNode
-            print("VoiceRecorder: Audio engine created")
 
-            // Configure input format - MUST use device's native format to avoid crashes
+            // Configure input format using device's native format
             let inputFormat = inputNode!.outputFormat(forBus: 0)
-            
-            print("VoiceRecorder: Device input format - sampleRate: \(inputFormat.sampleRate)Hz, channels: \(inputFormat.channelCount)")
-            print("VoiceRecorder: Client requested - sampleRate: \(streamingSampleRate)Hz, channels: \(streamingChannels)")
-            
-            // Update our streaming parameters to match device format (critical for stability)
             streamingSampleRate = inputFormat.sampleRate
             streamingChannels = inputFormat.channelCount
 
-            // Install tap using the device's native format (prevents sample rate mismatch crash)
+            // Install tap using the device's native format
             inputNode!.installTap(onBus: 0, bufferSize: bufferSize, format: inputFormat) { [weak self] (buffer, time) in
                 self?.processAudioBuffer(buffer, time: time)
             }
-            print("VoiceRecorder: Audio tap installed")
 
             // Start audio engine
             try audioEngine!.start()
             isStreaming = true
-            print("VoiceRecorder: Audio engine started successfully")
 
             call.resolve(ResponseGenerator.successResponse())
         } catch {
@@ -323,7 +301,6 @@ public class VoiceRecorder: CAPPlugin {
     
     private func processAudioBuffer(_ buffer: AVAudioPCMBuffer, time: AVAudioTime) {
         guard let channelData = buffer.floatChannelData else { 
-            print("VoiceRecorder: ❌ No channel data in buffer")
             return 
         }
         
@@ -334,20 +311,15 @@ public class VoiceRecorder: CAPPlugin {
         let avgLevel = audioData.reduce(0) { $0 + abs($1) } / Float(audioData.count)
         bufferCount += 1
         
-        // Log audio levels more frequently for debugging
-        if bufferCount % 20 == 0 { // Every 20 buffers (~920ms)
-            print("VoiceRecorder: Buffer #\(bufferCount), \(frameLength) samples, avg level: \(avgLevel)")
-            
-            if avgLevel > 0.01 {
-                print("VoiceRecorder: 🎤 Good audio detected!")
-                silentBufferCount = 0
-            } else if avgLevel < 0.001 {
+        // Monitor audio levels periodically
+        if bufferCount % 100 == 0 {
+            if avgLevel < 0.001 {
                 silentBufferCount += 1
-                print("VoiceRecorder: 🔇 Very low audio level detected (silent count: \(silentBufferCount))")
-                
-                if silentBufferCount > 50 { // ~2.3 seconds of silence
-                    print("VoiceRecorder: ⚠️ Extended silence detected - check microphone input")
+                if silentBufferCount > 10 {
+                    print("VoiceRecorder: Extended silence detected - check microphone input")
                 }
+            } else {
+                silentBufferCount = 0
             }
         }
 
@@ -364,7 +336,6 @@ public class VoiceRecorder: CAPPlugin {
 
     @objc func stopAudioStream(_ call: CAPPluginCall) {
         do {
-            print("VoiceRecorder: Stopping audio stream")
             isStreaming = false
             
             // Reset counters
@@ -381,11 +352,9 @@ public class VoiceRecorder: CAPPlugin {
 
             let audioSession = AVAudioSession.sharedInstance()
             try audioSession.setActive(false)
-            print("VoiceRecorder: Audio stream stopped successfully")
 
             call.resolve(ResponseGenerator.successResponse())
         } catch {
-            print("VoiceRecorder: Error stopping audio stream: \(error)")
             call.resolve(ResponseGenerator.failResponse())
         }
     }
@@ -406,18 +375,15 @@ public class VoiceRecorder: CAPPlugin {
         
         switch type {
         case .began:
-            print("VoiceRecorder: Audio interruption began (call, Siri, etc.)")
             if isStreaming {
                 audioEngine?.pause()
             }
             
         case .ended:
-            print("VoiceRecorder: Audio interruption ended")
             if isStreaming {
                 do {
                     try AVAudioSession.sharedInstance().setActive(true)
                     try audioEngine?.start()
-                    print("VoiceRecorder: Audio engine restarted after interruption")
                 } catch {
                     print("VoiceRecorder: Failed to restart audio engine: \(error)")
                 }
@@ -437,8 +403,8 @@ public class VoiceRecorder: CAPPlugin {
         
         switch reason {
         case .newDeviceAvailable, .oldDeviceUnavailable:
-            print("VoiceRecorder: Audio route changed - reason: \(reason)")
-            // Could restart engine here if needed for route changes
+            // Audio route changed - could restart engine if needed
+            break
             
         default:
             break
