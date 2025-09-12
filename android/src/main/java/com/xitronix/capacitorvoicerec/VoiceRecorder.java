@@ -10,6 +10,7 @@ import android.os.Build;
 import android.os.Process;
 import android.util.Log;
 import android.app.ActivityManager;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
@@ -511,7 +512,7 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
     private android.media.AudioRecord audioRecord;
     private Thread streamingThread;
     private boolean isStreaming = false;
-    private int streamingSampleRate = 44100;
+    private int streamingSampleRate = 48000; // Match iOS/Web default for WebRTC compatibility
     private int streamingChannelConfig = android.media.AudioFormat.CHANNEL_IN_MONO;
     private int streamingAudioFormat = android.media.AudioFormat.ENCODING_PCM_16BIT;
     private int streamingBufferSize;
@@ -530,7 +531,7 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
         }
 
         // Get options directly from call parameters
-        streamingSampleRate = call.getInt("sampleRate", 44100);
+        streamingSampleRate = call.getInt("sampleRate", 48000); // Default to 48kHz for WebRTC compatibility
         int channels = call.getInt("channels", 1);
         int requestedBufferSize = call.getInt("bufferSize", 4096);
 
@@ -548,13 +549,24 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
         );
 
         try {
+            // Configure audio session for voice chat (similar to iOS setup)
+            AudioManager audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+            if (audioManager != null) {
+                // Set audio mode for voice communication (similar to iOS .voiceChat mode)
+                audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+                Log.d(TAG, "Android: Set audio mode to MODE_IN_COMMUNICATION for voice chat");
+            }
+            
+            // Use VOICE_COMMUNICATION source for better voice chat quality (similar to iOS .voiceChat)
             audioRecord = new android.media.AudioRecord(
-                android.media.MediaRecorder.AudioSource.MIC,
+                android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 streamingSampleRate,
                 streamingChannelConfig,
                 streamingAudioFormat,
                 streamingBufferSize
             );
+            
+            Log.d(TAG, "Android: AudioRecord created - sampleRate: " + streamingSampleRate + "Hz, channels: " + channels + ", bufferSize: " + streamingBufferSize);
 
             if (audioRecord.getState() != android.media.AudioRecord.STATE_INITIALIZED) {
                 call.resolve(ResponseGenerator.failResponse());
@@ -563,6 +575,8 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
 
             audioRecord.startRecording();
             isStreaming = true;
+            
+            Log.d(TAG, "Android: ✅ Audio streaming started successfully");
 
             // Start streaming thread
             streamingThread = new Thread(this::streamAudioData);
@@ -575,6 +589,9 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
         }
     }
 
+    private int bufferCount = 0;
+    private int silentBufferCount = 0;
+    
     private void streamAudioData() {
         short[] audioBuffer = new short[streamingBufferSize / 2]; // 16-bit samples
         
@@ -584,18 +601,53 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
             if (samplesRead > 0) {
                 // Convert to float array for consistency with web
                 float[] floatBuffer = new float[samplesRead];
+                float sum = 0;
                 for (int i = 0; i < samplesRead; i++) {
                     floatBuffer[i] = audioBuffer[i] / 32768.0f; // Normalize to [-1, 1]
+                    sum += Math.abs(floatBuffer[i]);
+                }
+                
+                // Calculate audio level for monitoring (similar to iOS)
+                float avgLevel = sum / samplesRead;
+                bufferCount++;
+                
+                // Log audio levels periodically (similar to iOS logging)
+                if (bufferCount % 20 == 0) { // Every 20 buffers
+                    Log.d(TAG, "Android: Buffer #" + bufferCount + ", " + samplesRead + " samples, avg level: " + avgLevel + ", sampleRate: " + streamingSampleRate + "Hz");
+                    
+                    if (avgLevel > 0.01f) {
+                        Log.d(TAG, "Android: 🎤 Good audio detected!");
+                        silentBufferCount = 0;
+                    } else if (avgLevel < 0.001f) {
+                        silentBufferCount++;
+                        Log.d(TAG, "Android: 🔇 Very low audio level detected (silent count: " + silentBufferCount + ")");
+                        
+                        if (silentBufferCount > 50) { // ~2.3 seconds of silence
+                            Log.w(TAG, "Android: ⚠️ Extended silence detected - check microphone input");
+                        }
+                    }
                 }
 
-                // Send data to JavaScript
+                // Send data to JavaScript - Convert float array to JSArray for proper JS compatibility
                 JSObject data = new JSObject();
-                data.put("audioData", floatBuffer);
-                data.put("sampleRate", streamingSampleRate);
-                data.put("timestamp", System.currentTimeMillis());
-                data.put("channels", streamingChannelConfig == android.media.AudioFormat.CHANNEL_IN_MONO ? 1 : 2);
+                
+                try {
+                    // Convert float[] to JSArray to ensure it's a proper JavaScript array
+                    com.getcapacitor.JSArray jsAudioData = new com.getcapacitor.JSArray();
+                    for (float sample : floatBuffer) {
+                        jsAudioData.put(sample);
+                    }
+                    
+                    data.put("audioData", jsAudioData);
+                    data.put("sampleRate", streamingSampleRate);
+                    data.put("timestamp", System.currentTimeMillis());
+                    data.put("channels", streamingChannelConfig == android.media.AudioFormat.CHANNEL_IN_MONO ? 1 : 2);
 
-                notifyListeners("audioData", data);
+                    notifyListeners("audioData", data);
+                } catch (org.json.JSONException e) {
+                    Log.e(TAG, "Error creating audio data JSON", e);
+                    // Continue streaming even if one buffer fails
+                }
             }
         }
     }
@@ -603,7 +655,12 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
     @PluginMethod
     public void stopAudioStream(PluginCall call) {
         try {
+            Log.d(TAG, "Android: Stopping audio stream");
             isStreaming = false;
+            
+            // Reset counters
+            bufferCount = 0;
+            silentBufferCount = 0;
             
             if (streamingThread != null) {
                 streamingThread.interrupt();
@@ -615,6 +672,15 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
                 audioRecord.release();
                 audioRecord = null;
             }
+            
+            // Reset audio mode to normal (similar to iOS cleanup)
+            AudioManager audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+            if (audioManager != null) {
+                audioManager.setMode(AudioManager.MODE_NORMAL);
+                Log.d(TAG, "Android: Reset audio mode to MODE_NORMAL");
+            }
+            
+            Log.d(TAG, "Android: ✅ Audio stream stopped successfully");
 
             call.resolve(ResponseGenerator.successResponse());
         } catch (Exception e) {
