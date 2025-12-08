@@ -10,6 +10,7 @@ import android.os.Build;
 import android.os.Process;
 import android.util.Log;
 import android.app.ActivityManager;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
@@ -506,5 +507,177 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
     // Getter for the active recorder
     public static CustomMediaRecorder getActiveRecorder() {
         return activeRecorder;
+    }
+
+    private android.media.AudioRecord audioRecord;
+    private Thread streamingThread;
+    private boolean isStreaming = false;
+    private int streamingSampleRate = 48000; // Match iOS/Web default for WebRTC compatibility
+    private int streamingChannelConfig = android.media.AudioFormat.CHANNEL_IN_MONO;
+    private int streamingAudioFormat = android.media.AudioFormat.ENCODING_PCM_16BIT;
+    private int streamingBufferSize;
+
+    @PluginMethod
+    public void startAudioStream(PluginCall call) {
+        if (isStreaming) {
+            call.resolve(ResponseGenerator.failResponse());
+            return;
+        }
+
+        // Check permissions first
+        if (getPermissionState(RECORD_AUDIO_ALIAS) != PermissionState.GRANTED) {
+            call.resolve(ResponseGenerator.failResponse());
+            return;
+        }
+
+        // Get options directly from call parameters
+        streamingSampleRate = call.getInt("sampleRate", 48000); // Default to 48kHz for WebRTC compatibility
+        int channels = call.getInt("channels", 1);
+        int requestedBufferSize = call.getInt("bufferSize", 4096);
+
+        streamingChannelConfig = channels == 1 ? 
+            android.media.AudioFormat.CHANNEL_IN_MONO : 
+            android.media.AudioFormat.CHANNEL_IN_STEREO;
+
+        streamingBufferSize = Math.max(
+            requestedBufferSize * 2, // Convert to bytes (16-bit samples)
+            android.media.AudioRecord.getMinBufferSize(
+                streamingSampleRate, 
+                streamingChannelConfig, 
+                streamingAudioFormat
+            )
+        );
+
+        try {
+            // Configure audio session for voice chat
+            AudioManager audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+            if (audioManager != null) {
+                audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+            }
+            
+            // Use VOICE_COMMUNICATION source for better voice chat quality
+            audioRecord = new android.media.AudioRecord(
+                android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                streamingSampleRate,
+                streamingChannelConfig,
+                streamingAudioFormat,
+                streamingBufferSize
+            );
+
+            if (audioRecord.getState() != android.media.AudioRecord.STATE_INITIALIZED) {
+                call.resolve(ResponseGenerator.failResponse());
+                return;
+            }
+
+            audioRecord.startRecording();
+            isStreaming = true;
+
+            // Start streaming thread
+            streamingThread = new Thread(this::streamAudioData);
+            streamingThread.start();
+
+            call.resolve(ResponseGenerator.successResponse());
+        } catch (Exception e) {
+            Log.e(TAG, "Error starting audio stream", e);
+            call.resolve(ResponseGenerator.failResponse());
+        }
+    }
+
+    private int bufferCount = 0;
+    private int silentBufferCount = 0;
+    
+    private void streamAudioData() {
+        short[] audioBuffer = new short[streamingBufferSize / 2]; // 16-bit samples
+        
+        while (isStreaming && audioRecord != null) {
+            int samplesRead = audioRecord.read(audioBuffer, 0, audioBuffer.length);
+            
+            if (samplesRead > 0) {
+                // Convert to float array for consistency with web
+                float[] floatBuffer = new float[samplesRead];
+                float sum = 0;
+                for (int i = 0; i < samplesRead; i++) {
+                    floatBuffer[i] = audioBuffer[i] / 32768.0f; // Normalize to [-1, 1]
+                    sum += Math.abs(floatBuffer[i]);
+                }
+                
+                // Calculate audio level for monitoring (similar to iOS)
+                float avgLevel = sum / samplesRead;
+                bufferCount++;
+                
+                // Monitor audio levels periodically
+                if (bufferCount % 100 == 0) {
+                    if (avgLevel < 0.001f) {
+                        silentBufferCount++;
+                        if (silentBufferCount > 10) {
+                            Log.w(TAG, "Android: Extended silence detected - check microphone input");
+                        }
+                    } else {
+                        silentBufferCount = 0;
+                    }
+                }
+
+                // Send data to JavaScript - Convert float array to JSArray for proper JS compatibility
+                JSObject data = new JSObject();
+                
+                try {
+                    // Convert float[] to JSArray to ensure it's a proper JavaScript array
+                    com.getcapacitor.JSArray jsAudioData = new com.getcapacitor.JSArray();
+                    for (float sample : floatBuffer) {
+                        jsAudioData.put(sample);
+                    }
+                    
+                    data.put("audioData", jsAudioData);
+                    data.put("sampleRate", streamingSampleRate);
+                    data.put("timestamp", System.currentTimeMillis());
+                    data.put("channels", streamingChannelConfig == android.media.AudioFormat.CHANNEL_IN_MONO ? 1 : 2);
+
+                    notifyListeners("audioData", data);
+                } catch (org.json.JSONException e) {
+                    Log.e(TAG, "Error creating audio data JSON", e);
+                    // Continue streaming even if one buffer fails
+                }
+            }
+        }
+    }
+
+    @PluginMethod
+    public void stopAudioStream(PluginCall call) {
+        try {
+            isStreaming = false;
+            
+            // Reset counters
+            bufferCount = 0;
+            silentBufferCount = 0;
+            
+            if (streamingThread != null) {
+                streamingThread.interrupt();
+                streamingThread = null;
+            }
+            
+            if (audioRecord != null) {
+                audioRecord.stop();
+                audioRecord.release();
+                audioRecord = null;
+            }
+            
+            // Reset audio mode to normal
+            AudioManager audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+            if (audioManager != null) {
+                audioManager.setMode(AudioManager.MODE_NORMAL);
+            }
+
+            call.resolve(ResponseGenerator.successResponse());
+        } catch (Exception e) {
+            Log.e(TAG, "Error stopping audio stream", e);
+            call.resolve(ResponseGenerator.failResponse());
+        }
+    }
+
+    @PluginMethod
+    public void getStreamingStatus(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("status", isStreaming ? "STREAMING" : "STOPPED");
+        call.resolve(result);
     }
 }
