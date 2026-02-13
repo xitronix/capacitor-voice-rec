@@ -18,4 +18,5 @@ CAP_PLUGIN(VoiceRecorder, "VoiceRecorder",
            CAP_PLUGIN_METHOD(startAudioStream, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(stopAudioStream, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(getStreamingStatus, CAPPluginReturnPromise);
+           CAP_PLUGIN_METHOD(listRecordingFiles, CAPPluginReturnPromise);
 )

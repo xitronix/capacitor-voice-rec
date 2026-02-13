@@ -4,6 +4,7 @@ import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
 import android.media.AudioManager;
+import android.media.MediaMetadataRetriever;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
@@ -412,6 +413,75 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
         );
         
         call.resolve(ResponseGenerator.dataResponse(recordData.toJSObject()));
+    }
+
+    @PluginMethod
+    public void listRecordingFiles(PluginCall call) {
+        String directory = call.getString("directory", "DOCUMENTS");
+        CustomMediaRecorder scanner = new CustomMediaRecorder(getContext());
+        File dir = scanner.getDirectory(directory);
+
+        JSArray filesArray = new JSArray();
+
+        if (dir != null && dir.exists()) {
+            File[] files = dir.listFiles();
+            if (files != null) {
+                for (File file : files) {
+                    if (file.isFile() && file.getName().endsWith(".aac")) {
+                        JSObject fileInfo = buildFileInfo(file, false);
+                        if (fileInfo != null) {
+                            filesArray.put(fileInfo);
+                        }
+                    }
+                }
+            }
+
+            // Scan VoiceRecorderSegments subdirectory
+            File segmentsDir = new File(dir, "VoiceRecorderSegments");
+            if (segmentsDir.exists() && segmentsDir.isDirectory()) {
+                File[] segmentFiles = segmentsDir.listFiles();
+                if (segmentFiles != null) {
+                    for (File file : segmentFiles) {
+                        if (file.isFile() && file.getName().endsWith(".aac")) {
+                            JSObject fileInfo = buildFileInfo(file, true);
+                            if (fileInfo != null) {
+                                filesArray.put(fileInfo);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        JSObject result = new JSObject();
+        result.put("files", filesArray);
+        call.resolve(result);
+    }
+
+    private JSObject buildFileInfo(File file, boolean isSegment) {
+        JSObject info = new JSObject();
+        info.put("filePath", file.getAbsolutePath());
+        info.put("fileName", file.getName());
+        info.put("size", file.length());
+        info.put("createdAt", file.lastModified());
+        info.put("isSegment", isSegment);
+
+        long durationMs = -1;
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(file.getAbsolutePath());
+            String durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+            if (durationStr != null) {
+                durationMs = Long.parseLong(durationStr);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not get duration for: " + file.getName(), e);
+        } finally {
+            try { retriever.release(); } catch (Exception ignored) {}
+        }
+        info.put("durationMs", Math.max(durationMs, 0));
+
+        return info;
     }
 
     // --- Helper Methods ---

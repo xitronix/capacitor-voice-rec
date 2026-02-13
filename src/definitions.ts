@@ -44,6 +44,19 @@ export interface StreamingStatus {
   status: 'STREAMING' | 'STOPPED';
 }
 
+export interface RecordingFileInfo {
+  filePath: string;
+  fileName: string;
+  size: number;
+  createdAt: number;
+  durationMs: number;
+  isSegment?: boolean;
+}
+
+export interface ListRecordingFilesResult {
+  files: RecordingFileInfo[];
+}
+
 export interface VoiceRecorderPlugin {
   // Existing recording methods (DO NOT MODIFY - used by VoiceRecorderWrapper)
   addListener(
@@ -109,4 +122,9 @@ export interface VoiceRecorderPlugin {
    * Get current streaming status
    */
   getStreamingStatus(): Promise<StreamingStatus>;
+
+  /**
+   * List all recording files on disk for orphan detection
+   */
+  listRecordingFiles(options?: { directory?: string }): Promise<ListRecordingFilesResult>;
 }

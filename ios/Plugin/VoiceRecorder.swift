@@ -226,6 +226,56 @@ public class VoiceRecorder: CAPPlugin {
         call.resolve(ResponseGenerator.dataResponse(recordData.toDictionary()))
     }
 
+    @objc func listRecordingFiles(_ call: CAPPluginCall) {
+        let directory = call.getString("directory")
+        let dirURL = customMediaRecorder.getDirectory(directory: directory)
+        let fileManager = FileManager.default
+
+        var filesArray: [[String: Any]] = []
+
+        // Scan main recording directory
+        if let contents = try? fileManager.contentsOfDirectory(at: dirURL, includingPropertiesForKeys: [.fileSizeKey, .creationDateKey], options: .skipsHiddenFiles) {
+            for fileURL in contents where fileURL.pathExtension == "aac" {
+                if let info = getFileInfo(fileURL: fileURL, isSegment: false) {
+                    filesArray.append(info)
+                }
+            }
+        }
+
+        // Scan VoiceRecorderSegments subdirectory
+        let segmentsDir = dirURL.appendingPathComponent("VoiceRecorderSegments", isDirectory: true)
+        if fileManager.fileExists(atPath: segmentsDir.path),
+           let segmentContents = try? fileManager.contentsOfDirectory(at: segmentsDir, includingPropertiesForKeys: [.fileSizeKey, .creationDateKey], options: .skipsHiddenFiles) {
+            for fileURL in segmentContents where fileURL.pathExtension == "aac" {
+                if let info = getFileInfo(fileURL: fileURL, isSegment: true) {
+                    filesArray.append(info)
+                }
+            }
+        }
+
+        call.resolve(["files": filesArray])
+    }
+
+    private func getFileInfo(fileURL: URL, isSegment: Bool) -> [String: Any]? {
+        let fileManager = FileManager.default
+        guard let attrs = try? fileManager.attributesOfItem(atPath: fileURL.path) else { return nil }
+
+        let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+        let createdAt = (attrs[.creationDate] as? Date)?.timeIntervalSince1970 ?? 0
+
+        let asset = AVURLAsset(url: fileURL)
+        let durationMs = Int(CMTimeGetSeconds(asset.duration) * 1000)
+
+        return [
+            "filePath": fileURL.absoluteString,
+            "fileName": fileURL.lastPathComponent,
+            "size": size,
+            "createdAt": Int(createdAt * 1000),
+            "durationMs": max(durationMs, 0),
+            "isSegment": isSegment
+        ]
+    }
+
     private func doesUserGaveAudioRecordingPermission() -> Bool {
         return AVAudioSession.sharedInstance().recordPermission == AVAudioSession.RecordPermission.granted
     }

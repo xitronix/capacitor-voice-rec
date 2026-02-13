@@ -2,15 +2,16 @@ import { WebPlugin } from '@capacitor/core';
 import type { PluginListenerHandle } from '@capacitor/core';
 
 import { VoiceRecorderImpl } from './VoiceRecorderImpl';
-import type { 
-  CurrentRecordingStatus, 
-  GenericResponse, 
-  RecordingData, 
+import type {
+  CurrentRecordingStatus,
+  GenericResponse,
+  RecordingData,
   RecordingInfoData,
   VoiceRecorderPlugin,
   AudioStreamOptions,
   AudioDataEvent,
-  StreamingStatus
+  StreamingStatus,
+  ListRecordingFilesResult
 } from './definitions';
 
 export class VoiceRecorderWeb extends WebPlugin implements VoiceRecorderPlugin {
@@ -235,6 +236,13 @@ export class VoiceRecorderWeb extends WebPlugin implements VoiceRecorderPlugin {
    */
   public async getStreamingStatus(): Promise<StreamingStatus> {
     return { status: this.isStreaming ? 'STREAMING' : 'STOPPED' };
+  }
+
+  /**
+   * List recording files on disk — returns empty on web (no orphan concept)
+   */
+  public async listRecordingFiles(): Promise<ListRecordingFilesResult> {
+    return { files: [] };
   }
 
   /**
