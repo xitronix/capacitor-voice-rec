@@ -30,7 +30,7 @@ class CustomMediaRecorder:NSObject {
     private var originalFileURL: URL?
     // Storage for temporary recording segments that need to be merged
     private var tempRecordingSegments: [URL] = []
-    
+
    /**
      * Get the directory URL corresponding to the JS string
      */
@@ -87,13 +87,6 @@ class CustomMediaRecorder:NSObject {
                                            mode: .default,
                                            options: [.allowBluetooth, .duckOthers, .defaultToSpeaker, .mixWithOthers])
             try recordingSession.setActive(true, options: .notifyOthersOnDeactivation)
-            if #available(iOS 14.5, *) {
-                try recordingSession.setPrefersNoInterruptionsFromSystemAlerts(true)
-            }
-            
-            // Set audio session priority to high
-            try AVAudioSession.sharedInstance().setPreferredIOBufferDuration(0.005)
-            
             // Check if microphone is available
             guard recordingSession.isInputAvailable else {
                 cleanup()
@@ -298,8 +291,8 @@ class CustomMediaRecorder:NSObject {
                         semaphore.signal()
                     }
                     
-                    // Wait for a reasonable amount of time for the merge to complete
-                    let timeout = DispatchTime.now() + 15.0 // 15 second timeout
+                    // Wait for merge: raw concat ~100ms, re-encode fallback ~70s
+                    let timeout = DispatchTime.now() + 180.0
                     if semaphore.wait(timeout: timeout) == .timedOut {
                         print("Warning: Audio file merge timed out")
                     }
@@ -334,82 +327,150 @@ class CustomMediaRecorder:NSObject {
     
     // Merge multiple segments with the original file
     private func mergeSegmentsWithFile(originalFile: URL, segments: [URL], completion: @escaping (Bool) -> Void) {
-        // Only proceed if there are actually segments to merge
         if segments.isEmpty {
             completion(true)
             return
         }
-        
+
+        // Strategy 1: Raw ADTS byte concatenation (milliseconds, no AVFoundation)
+        if mergeSegmentsRawConcat(originalFile: originalFile, segments: segments) {
+            completion(true)
+            return
+        }
+
+        // Strategy 2: Re-encode fallback (handles non-ADTS files)
+        mergeSegmentsReencode(originalFile: originalFile, segments: segments, completion: completion)
+    }
+
+    /// Fast merge: raw ADTS byte concatenation (no re-encoding, no AVFoundation).
+    /// ADTS frames are self-contained — files can be concatenated byte-for-byte.
+    /// Returns true on success, false if files are not ADTS format.
+    private func mergeSegmentsRawConcat(originalFile: URL, segments: [URL]) -> Bool {
+        let allFiles = [originalFile] + segments.filter { FileManager.default.fileExists(atPath: $0.path) }
+
+        // 1. Verify ALL files are ADTS format (sync word 0xFFF in first 2 bytes)
+        for fileURL in allFiles {
+            guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return false }
+            let header = handle.readData(ofLength: 2)
+            handle.closeFile()
+            guard header.count >= 2,
+                  header[0] == 0xFF,
+                  (header[1] & 0xF0) == 0xF0 else { return false }
+        }
+
+        // 2. Calculate expected output size for validation
+        var expectedSize: UInt64 = 0
+        for fileURL in allFiles {
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+                  let size = attrs[.size] as? UInt64 else { return false }
+            expectedSize += size
+        }
+
+        // 3. Create temp output file in same directory (for atomic rename)
+        let tempURL = originalFile.deletingLastPathComponent()
+            .appendingPathComponent("merged_raw_\(Date().timeIntervalSince1970).aac")
+        guard FileManager.default.createFile(atPath: tempURL.path, contents: nil) else { return false }
+
+        // 4. Concatenate all files byte-for-byte using streaming I/O (16KB buffer)
+        do {
+            let outputHandle = try FileHandle(forWritingTo: tempURL)
+            defer { outputHandle.closeFile() }
+
+            for fileURL in allFiles {
+                let inputHandle = try FileHandle(forReadingFrom: fileURL)
+                defer { inputHandle.closeFile() }
+                while true {
+                    let chunk = inputHandle.readData(ofLength: 16 * 1024)
+                    if chunk.isEmpty { break }
+                    outputHandle.write(chunk)
+                }
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: tempURL)
+            return false
+        }
+
+        // 5. Validate output size matches expected
+        guard let outAttrs = try? FileManager.default.attributesOfItem(atPath: tempURL.path),
+              let outSize = outAttrs[.size] as? UInt64,
+              outSize == expectedSize else {
+            try? FileManager.default.removeItem(at: tempURL)
+            return false
+        }
+
+        // 6. Atomic replace: remove original, move merged file to original path
+        do {
+            try FileManager.default.removeItem(at: originalFile)
+            try FileManager.default.moveItem(at: tempURL, to: originalFile)
+            return true
+        } catch {
+            try? FileManager.default.removeItem(at: tempURL)
+            return false
+        }
+    }
+
+    /// Re-encode merge using AVAssetExportSession (AppleM4A preset)
+    private func mergeSegmentsReencode(originalFile: URL, segments: [URL], completion: @escaping (Bool) -> Void) {
         let composition = AVMutableComposition()
         guard let compositionTrack = composition.addMutableTrack(
             withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
             completion(false)
             return
         }
-        
+
         var currentPosition = CMTime.zero
-        
+
         do {
-            // Add original file if it exists and has content
+            // Add original file
             if FileManager.default.fileExists(atPath: originalFile.path),
                let attributes = try? FileManager.default.attributesOfItem(atPath: originalFile.path),
                let fileSize = attributes[.size] as? UInt64, fileSize > 0 {
-                
                 let originalAsset = AVURLAsset(url: originalFile)
                 if let originalTrack = originalAsset.tracks(withMediaType: .audio).first {
                     try compositionTrack.insertTimeRange(
                         CMTimeRange(start: .zero, duration: originalAsset.duration),
-                        of: originalTrack,
-                        at: currentPosition
-                    )
+                        of: originalTrack, at: currentPosition)
                     currentPosition = CMTimeAdd(currentPosition, originalAsset.duration)
                 }
             }
-            
-            // Add all segment files sequentially
+
+            // Add segments
             for segmentURL in segments where FileManager.default.fileExists(atPath: segmentURL.path) {
                 let segmentAsset = AVURLAsset(url: segmentURL)
                 if let segmentTrack = segmentAsset.tracks(withMediaType: .audio).first {
                     try compositionTrack.insertTimeRange(
                         CMTimeRange(start: .zero, duration: segmentAsset.duration),
-                        of: segmentTrack,
-                        at: currentPosition
-                    )
+                        of: segmentTrack, at: currentPosition)
                     currentPosition = CMTimeAdd(currentPosition, segmentAsset.duration)
                 }
             }
-            
-            // Export directly to the target file
-            let tempExportURL = URL(fileURLWithPath: NSTemporaryDirectory())
-                .appendingPathComponent("merged_\(Date().timeIntervalSince1970).m4a")
-            
-            guard let exporter = AVAssetExportSession(
-                asset: composition,
-                presetName: AVAssetExportPresetAppleM4A
-            ) else {
+
+            let totalDuration = CMTimeGetSeconds(currentPosition)
+
+            guard let exporter = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A) else {
                 completion(false)
                 return
             }
-            
+
+            let tempExportURL = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("merged_enc_\(Date().timeIntervalSince1970).m4a")
+
             exporter.outputURL = tempExportURL
             exporter.outputFileType = .m4a
-            
-            // Export synchronously to ensure completion
+
             let exportGroup = DispatchGroup()
             exportGroup.enter()
-            
+
             exporter.exportAsynchronously {
                 defer { exportGroup.leave() }
-                
+
                 if exporter.status == .completed {
                     do {
-                        // Replace original with merged file
                         if FileManager.default.fileExists(atPath: originalFile.path) {
                             try FileManager.default.removeItem(at: originalFile)
                         }
                         try FileManager.default.moveItem(at: tempExportURL, to: originalFile)
                     } catch {
-                        print("Error replacing file: \(error)")
                         completion(false)
                         return
                     }
@@ -418,11 +479,14 @@ class CustomMediaRecorder:NSObject {
                     completion(false)
                 }
             }
-            
-            // Wait for export to complete with a timeout
-            _ = exportGroup.wait(timeout: .now() + 25)
+
+            let timeoutSeconds = max(60.0, totalDuration * 1.0)
+            let waitResult = exportGroup.wait(timeout: .now() + timeoutSeconds)
+            if waitResult == .timedOut {
+                exporter.cancelExport()
+                completion(false)
+            }
         } catch {
-            print("Error in merge: \(error)")
             completion(false)
         }
     }
@@ -627,8 +691,8 @@ class CustomMediaRecorder:NSObject {
             semaphore.signal()
         }
         
-        // Wait for completion with a reasonable timeout (30 seconds or more if needed)
-        let timeout = DispatchTime.now() + 30.0
+        // Wait for merge: raw concat ~100ms, re-encode fallback ~70s
+        let timeout = DispatchTime.now() + 180.0
         let timeoutOccurred = semaphore.wait(timeout: timeout) == .timedOut
         
         if timeoutOccurred {
@@ -716,3 +780,4 @@ extension CustomMediaRecorder:AVAudioRecorderDelegate {
         }
     }
 }
+

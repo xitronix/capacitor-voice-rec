@@ -11,7 +11,7 @@ import type {
   AudioStreamOptions,
   AudioDataEvent,
   StreamingStatus,
-  ListRecordingFilesResult
+  ListRecordingFilesResult,
 } from './definitions';
 
 export class VoiceRecorderWeb extends WebPlugin implements VoiceRecorderPlugin {
