@@ -1,5 +1,28 @@
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-import getBlobDuration from 'get-blob-duration';
+/**
+ * Get the duration of a Blob or URL in seconds.
+ * Replaces the abandoned `get-blob-duration` package.
+ */
+function getBlobDuration(resource: Blob | string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const el = document.createElement('audio');
+    el.addEventListener('loadedmetadata', () => {
+      if (el.duration === Infinity) {
+        el.currentTime = Number.MAX_SAFE_INTEGER;
+        el.ontimeupdate = () => {
+          el.ontimeupdate = null;
+          resolve(el.duration);
+          el.currentTime = 0;
+        };
+      } else {
+        resolve(el.duration);
+      }
+    });
+    el.onerror = (e) => reject((e as ErrorEvent).error ?? e);
+    el.src = typeof resource === 'string' || resource instanceof String
+      ? (resource as string)
+      : URL.createObjectURL(resource);
+  });
+}
 import { openDB } from 'idb';
 
 import type { CurrentRecordingStatus, GenericResponse, RecordingData, RecordingInfoData } from './definitions';
