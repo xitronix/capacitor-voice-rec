@@ -2,11 +2,17 @@ import Foundation
 import AVFoundation
 
 class CustomMediaRecorder:NSObject {
+    private static let recoverySessionKey = "capacitor_voice_rec_active_session"
+
     private var recordingSession: AVAudioSession!
     private var audioRecorder: AVAudioRecorder!
     private var audioFilePath: URL!
     private var originalRecordingSessionCategory: AVAudioSession.Category!
     private var currentTempRecordingPath: URL?
+    private var notificationObserversInstalled = false
+    private var sessionId: String?
+    private var sessionStartedAtMs: Int?
+    private var currentDirectory: String?
 
     private var _status = CurrentRecordingStatus.NONE
     var onStatusChange: ((CurrentRecordingStatus) -> Void)?
@@ -59,6 +65,9 @@ class CustomMediaRecorder:NSObject {
      * Set up notification observers for audio session events
      */
     private func setupNotificationObservers() {
+        guard !notificationObserversInstalled else { return }
+        notificationObserversInstalled = true
+
         NotificationCenter.default.addObserver(self,
                                              selector: #selector(handleInterruption),
                                              name: AVAudioSession.interruptionNotification,
@@ -70,6 +79,10 @@ class CustomMediaRecorder:NSObject {
         NotificationCenter.default.addObserver(self,
                                              selector: #selector(handleMediaServicesReset),
                                              name: AVAudioSession.mediaServicesWereResetNotification,
+                                             object: AVAudioSession.sharedInstance())
+        NotificationCenter.default.addObserver(self,
+                                             selector: #selector(handleRouteChange),
+                                             name: AVAudioSession.routeChangeNotification,
                                              object: AVAudioSession.sharedInstance())
     }
     
@@ -104,6 +117,9 @@ class CustomMediaRecorder:NSObject {
     public func startRecording(directory: String?) -> Bool {
         // Set up notification observers
         setupNotificationObservers()
+        currentDirectory = directory
+        sessionId = UUID().uuidString
+        sessionStartedAtMs = Self.nowMs()
         
         // Configure audio session
         if !setupAudioSession() {
@@ -132,6 +148,7 @@ class CustomMediaRecorder:NSObject {
             }
             
             status = CurrentRecordingStatus.RECORDING
+            persistRecoverySession()
             return true
         } catch {
             cleanup()
@@ -147,6 +164,9 @@ class CustomMediaRecorder:NSObject {
         
         // Store the original file URL - this is what we'll always return
         originalFileURL = prevFileURL
+        sessionId = UUID().uuidString
+        sessionStartedAtMs = Self.nowMs()
+        currentDirectory = directory
         
         // Look for any existing temporary files from previous continuations
         findExistingTempSegments(forOriginalFile: prevFileURL)
@@ -179,6 +199,7 @@ class CustomMediaRecorder:NSObject {
                 
                 // Save segments list for recovery after app restart
                 saveTempSegmentsList()
+                persistRecoverySession()
                 
                 return true
             } else {
@@ -221,6 +242,7 @@ class CustomMediaRecorder:NSObject {
             UserDefaults.standard.set(segmentPaths, forKey: userDefaultsKey)
             UserDefaults.standard.synchronize()
             print("Saved \(segmentPaths.count) temp segments for recovery")
+            persistRecoverySession()
         }
     }
     
@@ -307,6 +329,7 @@ class CustomMediaRecorder:NSObject {
             
             // Clean up resources
             cleanup()
+            clearRecoverySession()
         }
     }
     
@@ -505,6 +528,9 @@ class CustomMediaRecorder:NSObject {
             originalRecordingSessionCategory = nil
             status = CurrentRecordingStatus.NONE
             currentTempRecordingPath = nil
+            sessionId = nil
+            sessionStartedAtMs = nil
+            currentDirectory = nil
         } catch {
             print("Error during cleanup: \(error)")
         }
@@ -522,6 +548,7 @@ class CustomMediaRecorder:NSObject {
         if(status == CurrentRecordingStatus.RECORDING) {
             audioRecorder.pause()
             status = CurrentRecordingStatus.PAUSED
+            persistRecoverySession()
             return true
         } else {
             return false
@@ -530,10 +557,14 @@ class CustomMediaRecorder:NSObject {
     
     public func resumeRecording() -> Bool {
         if(status == CurrentRecordingStatus.PAUSED) {
+            guard recordingSession != nil, audioRecorder != nil else {
+                return false
+            }
             do {
                 try recordingSession.setActive(true, options: .notifyOthersOnDeactivation)
                 audioRecorder.record() // It will continue from where it was paused
                 status = CurrentRecordingStatus.RECORDING
+                persistRecoverySession()
                 return true
             } catch {
                 print("Failed to resume recording: \(error)")
@@ -546,6 +577,23 @@ class CustomMediaRecorder:NSObject {
     
     public func getCurrentStatus() -> CurrentRecordingStatus {
         return status
+    }
+
+    public func getActiveRecordingSession() -> [String: Any]? {
+        if status != .NONE {
+            persistRecoverySession()
+            return buildRecoverySession(statusOverride: nil, interruptionReason: nil)
+        }
+
+        return Self.loadPersistedRecoverySession()
+    }
+
+    public func listRecoverableSessions() -> [[String: Any]] {
+        guard let session = Self.loadPersistedRecoverySession(),
+              Self.recoverySessionHasAudio(session) else {
+            return []
+        }
+        return [session]
     }
  
     public func removeRecording(fileUrl: URL) {
@@ -567,6 +615,7 @@ class CustomMediaRecorder:NSObject {
             if FileManager.default.fileExists(atPath: fileUrl.path) {
                 try FileManager.default.removeItem(atPath: fileUrl.path)
             }
+            clearRecoverySession()
         } catch let error {
             print("Error while removing file: \(error.localizedDescription)")
         }
@@ -574,6 +623,73 @@ class CustomMediaRecorder:NSObject {
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+    }
+
+    private static func nowMs() -> Int {
+        return Int(Date().timeIntervalSince1970 * 1000)
+    }
+
+    private func buildRecoverySession(statusOverride: String?, interruptionReason: String?) -> [String: Any]? {
+        guard let fileURL = getOutputFile() else { return nil }
+        let sid = sessionId ?? fileURL.deletingPathExtension().lastPathComponent
+        let startedAt = sessionStartedAtMs ?? Self.nowMs()
+
+        var data: [String: Any] = [
+            "sessionId": sid,
+            "filePath": fileURL.absoluteString,
+            "status": statusOverride ?? status.rawValue,
+            "startedAt": startedAt,
+            "updatedAt": Self.nowMs(),
+            "platform": "ios",
+            "hasSegments": hasPersistedSegments(for: fileURL)
+        ]
+        if let directory = currentDirectory {
+            data["directory"] = directory
+        }
+        if let reason = interruptionReason {
+            data["interruptionReason"] = reason
+        }
+        return data
+    }
+
+    private func persistRecoverySession(statusOverride: String? = nil, interruptionReason: String? = nil) {
+        guard let data = buildRecoverySession(statusOverride: statusOverride, interruptionReason: interruptionReason) else {
+            return
+        }
+        UserDefaults.standard.set(data, forKey: Self.recoverySessionKey)
+        UserDefaults.standard.synchronize()
+    }
+
+    private func clearRecoverySession() {
+        UserDefaults.standard.removeObject(forKey: Self.recoverySessionKey)
+        UserDefaults.standard.synchronize()
+    }
+
+    private static func loadPersistedRecoverySession() -> [String: Any]? {
+        return UserDefaults.standard.dictionary(forKey: recoverySessionKey)
+    }
+
+    private static func recoverySessionHasAudio(_ session: [String: Any]) -> Bool {
+        guard let filePath = session["filePath"] as? String else { return false }
+        let fileURL: URL?
+        if filePath.hasPrefix("file://") {
+            fileURL = URL(string: filePath)
+        } else {
+            fileURL = URL(fileURLWithPath: filePath)
+        }
+        guard let url = fileURL else { return false }
+        if FileManager.default.fileExists(atPath: url.path) {
+            return true
+        }
+        return (session["hasSegments"] as? Bool) == true
+    }
+
+    private func hasPersistedSegments(for fileURL: URL) -> Bool {
+        guard let key = getTempSegmentsKey(forFile: fileURL),
+              let savedSegmentsPaths = UserDefaults.standard.array(forKey: key) as? [String] else {
+            return false
+        }
+        return savedSegmentsPaths.contains { FileManager.default.fileExists(atPath: $0) }
     }
 
     private func setupRecordingSession() -> Bool {
@@ -686,6 +802,9 @@ class CustomMediaRecorder:NSObject {
             // Clean up temp files
             self.cleanupTempFiles()
             self.clearTempSegmentsList()
+            if success {
+                self.clearRecoverySession()
+            }
             
             // Signal completion
             semaphore.signal()
@@ -758,7 +877,41 @@ extension CustomMediaRecorder:AVAudioRecorderDelegate {
     }
 
     @objc func handleMediaServicesReset(notification: Notification) {
-        tryResumeRecording()
+        // Apple recommends recreating audio objects after a media-services reset.
+        // Keep the persisted session recoverable, but require an explicit user retry.
+        if status == .RECORDING || status == .PAUSED {
+            persistRecoverySession(statusOverride: "INTERRUPTED", interruptionReason: "mediaServicesReset")
+            audioRecorder?.stop()
+            audioRecorder = nil
+            recordingSession = nil
+            status = .PAUSED
+        }
+    }
+
+    @objc func handleRouteChange(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
+            return
+        }
+
+        switch reason {
+        case .oldDeviceUnavailable, .newDeviceAvailable, .routeConfigurationChange:
+            if status == .RECORDING {
+                do {
+                    try recordingSession?.setCategory(.playAndRecord,
+                                                      mode: .default,
+                                                      options: [.allowBluetooth, .duckOthers, .defaultToSpeaker, .mixWithOthers])
+                    try recordingSession?.setActive(true, options: .notifyOthersOnDeactivation)
+                    persistRecoverySession()
+                } catch {
+                    let _ = pauseRecording()
+                    persistRecoverySession(statusOverride: "INTERRUPTED", interruptionReason: "routeChange")
+                }
+            }
+        default:
+            break
+        }
     }
 
     // Helper to check if we can record

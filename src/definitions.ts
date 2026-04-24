@@ -24,7 +24,28 @@ export interface GenericResponse {
 }
 
 export interface CurrentRecordingStatus {
-  status: 'RECORDING' | 'PAUSED' | 'NONE';
+  status: 'RECORDING' | 'PAUSED' | 'NONE' | 'INTERRUPTED';
+  reason?: string;
+}
+
+export interface RecordingSessionInfo {
+  sessionId: string;
+  filePath: string;
+  status: 'RECORDING' | 'PAUSED' | 'NONE' | 'INTERRUPTED';
+  startedAt: number;
+  updatedAt: number;
+  platform: 'ios' | 'android' | 'web';
+  hasSegments?: boolean;
+  directory?: string;
+  interruptionReason?: string;
+}
+
+export interface ActiveRecordingSessionResult {
+  value: RecordingSessionInfo | null;
+}
+
+export interface RecoverableRecordingSessionsResult {
+  sessions: RecordingSessionInfo[];
 }
 
 export interface AudioStreamOptions {
@@ -147,6 +168,17 @@ export interface VoiceRecorderPlugin {
   resumeRecording(): Promise<GenericResponse>;
 
   getCurrentStatus(): Promise<CurrentRecordingStatus>;
+
+  /**
+   * Returns the native-owned active/recoverable recording session, if one exists.
+   * This is the bridge-recovery source of truth after a WebView reload.
+   */
+  getActiveRecordingSession(): Promise<ActiveRecordingSessionResult>;
+
+  /**
+   * Lists native sessions with durable audio or segments that can be saved/resumed.
+   */
+  listRecoverableRecordingSessions(): Promise<RecoverableRecordingSessionsResult>;
   
   /**
    * Get information about a recording file without having to continue/stop it

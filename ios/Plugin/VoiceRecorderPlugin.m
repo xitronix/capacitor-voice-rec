@@ -13,6 +13,8 @@ CAP_PLUGIN(VoiceRecorder, "VoiceRecorder",
            CAP_PLUGIN_METHOD(pauseRecording, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(resumeRecording, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(getCurrentStatus, CAPPluginReturnPromise);
+           CAP_PLUGIN_METHOD(getActiveRecordingSession, CAPPluginReturnPromise);
+           CAP_PLUGIN_METHOD(listRecoverableRecordingSessions, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(getRecordingInfo, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(finalizeRecording, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(startAudioStream, CAPPluginReturnPromise);

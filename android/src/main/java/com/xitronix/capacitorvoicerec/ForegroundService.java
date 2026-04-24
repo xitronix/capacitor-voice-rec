@@ -12,6 +12,7 @@ import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
 import androidx.core.app.NotificationCompat;
+import androidx.core.app.ServiceCompat;
 
 public class ForegroundService extends Service {
 
@@ -61,7 +62,7 @@ public class ForegroundService extends Service {
         // Start as foreground service with notification
         if (intent != null) {
             String iconName = intent.getStringExtra(EXTRA_ICON_RES_NAME);
-            startForeground(NOTIFICATION_ID, buildNotification(iconName));
+            startAsMicrophoneForegroundService(buildNotification(iconName));
 
             String action = intent.getAction();
             if (action != null && action.equals(ACTION_STOP_FOREGROUND_SERVICE)) {
@@ -89,7 +90,7 @@ public class ForegroundService extends Service {
             }
         } else {
             // If intent is null, still start foreground with default notification
-            startForeground(NOTIFICATION_ID, buildNotification(null));
+            startAsMicrophoneForegroundService(buildNotification(null));
         }
         
         // Default handling for continuation
@@ -163,6 +164,19 @@ public class ForegroundService extends Service {
         builder.addAction(android.R.drawable.ic_media_pause, "Stop Recording", pendingStopIntent);
         
         return builder.build();
+    }
+
+    private void startAsMicrophoneForegroundService(Notification notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            );
+        } else {
+            startForeground(NOTIFICATION_ID, notification);
+        }
     }
 
     private void createNotificationChannel() {

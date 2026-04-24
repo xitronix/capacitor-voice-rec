@@ -483,7 +483,7 @@ export class VoiceRecorderImpl {
     this.pendingResult = neverResolvingPromise();
   }
 
-  private notifyStateChange(status: 'RECORDING' | 'PAUSED' | 'NONE') {
+  private notifyStateChange(status: CurrentRecordingStatus['status']) {
     if (this.onStateChange) {
       this.onStateChange({ status });
     }

@@ -3,6 +3,9 @@ package com.xitronix.capacitorvoicerec;
 import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.media.MediaMetadataRetriever;
 import android.media.MediaPlayer;
@@ -41,9 +44,18 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
     static final String RECORD_AUDIO_ALIAS = "voice recording";
     private static final String TAG = "VoiceRecorderPlugin";
     private static final String EVENT_STATE_CHANGE = "recordingStateChange";
+    private static final String PREFS_NAME = "VoiceRecorderPrefs";
+    private static final String ACTIVE_RECORDING_SESSION_KEY = "active_recording_session";
 
     private CustomMediaRecorder customMediaRecorder;
     private boolean useForegroundService = false;
+    private String activeSessionId;
+    private long activeSessionStartedAtMs = 0;
+    private String activeRecordingFilePath;
+    private String activeRecordingDirectory;
+    private AudioFocusRequest audioFocusRequest;
+    private boolean recorderPausedForFocusLoss = false;
+    private final AudioManager.OnAudioFocusChangeListener audioFocusChangeListener = this::handleAudioFocusChange;
     // Whether the currently running foreground service was started for the streaming
     // path (true) or the file-recording path (false). Governs the stop-action behavior.
     private boolean foregroundServiceForStreaming = false;
@@ -74,6 +86,22 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
 
     @Override
     protected void handleOnDestroy() {
+        if (isStreaming || audioRecord != null) {
+            stopStreamingInternal();
+        }
+        if (customMediaRecorder != null && customMediaRecorder.getCurrentStatus() != CurrentRecordingStatus.NONE) {
+            persistActiveRecordingSession("INTERRUPTED", "pluginDestroyed");
+            try {
+                customMediaRecorder.stopRecording();
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to stop recorder during plugin destroy", e);
+            }
+        }
+        if (useForegroundService && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            stopForegroundService();
+        }
+        customMediaRecorder = null;
+        activeRecorder = null;
         if (activePlugin == this) {
             activePlugin = null;
         }
@@ -93,7 +121,19 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
     // Callback from CustomMediaRecorder
     @Override
     public void onStatusChange(CurrentRecordingStatus status) {
+        if (status != CurrentRecordingStatus.NONE) {
+            persistActiveRecordingSession(status.name(), null);
+        }
         notifyListeners(EVENT_STATE_CHANGE, ResponseGenerator.statusResponse(status));
+    }
+
+    @Override
+    public void onRecordingError(String reason) {
+        persistActiveRecordingSession("INTERRUPTED", reason);
+        JSObject data = new JSObject();
+        data.put("status", "INTERRUPTED");
+        data.put("reason", reason);
+        notifyListeners(EVENT_STATE_CHANGE, data);
     }
 
 
@@ -143,6 +183,11 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
 
     @PluginMethod
     public void startRecording(PluginCall call) {
+        if (isStreaming) {
+            call.reject("Audio streaming is already active");
+            return;
+        }
+
         if (!doesUserGaveAudioRecordingPermission()) {
             call.reject(Messages.MISSING_PERMISSION, RECORD_AUDIO_ALIAS); // Indicate which permission is missing
             return;
@@ -163,9 +208,17 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
         // Get options
         String directory = call.getString("directory", "DOCUMENTS");
         useForegroundService = Boolean.TRUE.equals(call.getBoolean("useForegroundService", false));
+        activeSessionId = java.util.UUID.randomUUID().toString();
+        activeSessionStartedAtMs = nowMs();
+        activeRecordingDirectory = directory;
         // this.currentDirectory = directory; // Store if needed
 
         try {
+             if (!requestAudioFocusForRecording()) {
+                 call.reject(Messages.MICROPHONE_BEING_USED);
+                 return;
+             }
+
              // Start foreground service if requested
             if (useForegroundService && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                  startForegroundService(call);
@@ -177,6 +230,8 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
             activeRecorder = customMediaRecorder; // Update static reference
 
             String filePathUri = customMediaRecorder.startRecording(directory);
+            activeRecordingFilePath = filePathUri;
+            persistActiveRecordingSession(CurrentRecordingStatus.RECORDING.name(), null);
 
              // Initial response - duration is unknown (-1)
             RecordData recordData = new RecordData(
@@ -193,6 +248,7 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
                  customMediaRecorder.deleteOutputFile(); // Delete potentially corrupted file
                  customMediaRecorder = null;
              }
+             abandonAudioFocus();
              if (useForegroundService && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                   stopForegroundService();
              }
@@ -202,6 +258,11 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
 
      @PluginMethod
      public void continueRecording(PluginCall call) {
+         if (isStreaming) {
+             call.reject("Audio streaming is already active");
+             return;
+         }
+
          if (!doesUserGaveAudioRecordingPermission()) {
              call.reject(Messages.MISSING_PERMISSION);
              return;
@@ -231,6 +292,10 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
          // Get previous file path and directory
          String prevFilePathUri = call.getString("filePath");
          String directory = call.getString("directory", "DOCUMENTS"); // Directory for the *new* segment
+         useForegroundService = Boolean.TRUE.equals(call.getBoolean("useForegroundService", useForegroundService));
+         activeSessionId = java.util.UUID.randomUUID().toString();
+         activeSessionStartedAtMs = nowMs();
+         activeRecordingDirectory = directory;
           // this.currentDirectory = directory;
 
           if (prevFilePathUri == null || prevFilePathUri.isEmpty()) {
@@ -247,6 +312,11 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
 
 
          try {
+              if (!requestAudioFocusForRecording()) {
+                  call.reject(Messages.MICROPHONE_BEING_USED);
+                  return;
+              }
+
               // Start foreground service if requested (and not already running, though state check above should handle this)
               if (useForegroundService && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                   startForegroundService(call);
@@ -257,6 +327,9 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
              customMediaRecorder.setListener(this);
 
              String newSegmentPathUri = customMediaRecorder.continueRecording(prevFilePathUri, directory);
+             activeRecordingFilePath = newSegmentPathUri;
+             activeRecorder = customMediaRecorder;
+             persistActiveRecordingSession(CurrentRecordingStatus.RECORDING.name(), null);
 
               // Return info about the *new* segment being recorded
              RecordData recordData = new RecordData(
@@ -272,6 +345,7 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
                  // Don't delete the *previous* file on continue failure, but clean up the new instance
                  customMediaRecorder = null;
              }
+             abandonAudioFocus();
               if (useForegroundService && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                   stopForegroundService();
              }
@@ -281,6 +355,7 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
                if (customMediaRecorder != null) {
                   customMediaRecorder = null;
               }
+               abandonAudioFocus();
                if (useForegroundService && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                    stopForegroundService();
                }
@@ -327,10 +402,12 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
             } else {
                 RecordData recordData = new RecordData(duration, "audio/aac", finalPath); // Use direct path instead of URI
                 call.resolve(ResponseGenerator.dataResponse(recordData.toJSObject()));
+                clearActiveRecordingSession();
             }
 
         } catch (Exception exp) {
              Log.e(TAG, "Stop Recording failed", exp);
+             persistActiveRecordingSession("INTERRUPTED", "stopFailed");
              // Attempt to stop foreground service even if stopRecorder failed
               if (useForegroundService && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                   stopForegroundService();
@@ -340,6 +417,8 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
             // Clean up the recorder instance after stopping
             customMediaRecorder = null;
             activeRecorder = null; // Clear static reference
+            recorderPausedForFocusLoss = false;
+            abandonAudioFocus();
         }
     }
 
@@ -351,6 +430,9 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
         }
         try {
             boolean paused = customMediaRecorder.pauseRecording();
+            if (paused) {
+                persistActiveRecordingSession(CurrentRecordingStatus.PAUSED.name(), null);
+            }
             call.resolve(ResponseGenerator.fromBoolean(paused));
         } catch (NotSupportedOsVersion exception) {
             call.reject(Messages.NOT_SUPPORTED_OS_VERSION);
@@ -373,6 +455,9 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
                 return;
             }
             boolean resumed = customMediaRecorder.resumeRecording();
+            if (resumed) {
+                persistActiveRecordingSession(CurrentRecordingStatus.RECORDING.name(), null);
+            }
             call.resolve(ResponseGenerator.fromBoolean(resumed));
         } catch (NotSupportedOsVersion exception) {
             call.reject(Messages.NOT_SUPPORTED_OS_VERSION);
@@ -390,6 +475,29 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
         } else {
             call.resolve(ResponseGenerator.statusResponse(customMediaRecorder.getCurrentStatus()));
         }
+    }
+
+    @PluginMethod
+    public void getActiveRecordingSession(PluginCall call) {
+        JSObject session = buildActiveRecordingSession(null, null);
+        if (session == null) {
+            session = loadPersistedRecordingSession();
+        }
+        JSObject response = new JSObject();
+        response.put("value", session);
+        call.resolve(response);
+    }
+
+    @PluginMethod
+    public void listRecoverableRecordingSessions(PluginCall call) {
+        JSArray sessions = new JSArray();
+        JSObject session = loadPersistedRecordingSession();
+        if (session != null && recoverySessionHasAudio(session)) {
+            sessions.put(session);
+        }
+        JSObject response = new JSObject();
+        response.put("sessions", sessions);
+        call.resolve(response);
     }
 
     /**
@@ -455,6 +563,7 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
         );
         
         call.resolve(ResponseGenerator.dataResponse(recordData.toJSObject()));
+        clearActiveRecordingSession();
     }
 
     @PluginMethod
@@ -530,6 +639,178 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
 
     private boolean doesUserGaveAudioRecordingPermission() {
         return getPermissionState(RECORD_AUDIO_ALIAS) == PermissionState.GRANTED;
+    }
+
+    private long nowMs() {
+        return System.currentTimeMillis();
+    }
+
+    private JSObject buildActiveRecordingSession(String statusOverride, String interruptionReason) {
+        String filePath = activeRecordingFilePath;
+        if (filePath == null && customMediaRecorder != null) {
+            filePath = customMediaRecorder.getOutputFilePathUri();
+        }
+        if (filePath == null) return null;
+
+        String status = statusOverride;
+        if (status == null) {
+            status = customMediaRecorder != null ? customMediaRecorder.getCurrentStatus().name() : "INTERRUPTED";
+        }
+
+        JSObject data = new JSObject();
+        data.put("sessionId", activeSessionId != null ? activeSessionId : new File(filePath).getName());
+        data.put("filePath", filePath);
+        data.put("status", status);
+        data.put("startedAt", activeSessionStartedAtMs > 0 ? activeSessionStartedAtMs : nowMs());
+        data.put("updatedAt", nowMs());
+        data.put("platform", "android");
+        data.put("hasSegments", hasRecoverableSegments(filePath));
+        if (activeRecordingDirectory != null) {
+            data.put("directory", activeRecordingDirectory);
+        }
+        if (interruptionReason != null) {
+            data.put("interruptionReason", interruptionReason);
+        }
+        return data;
+    }
+
+    private void persistActiveRecordingSession(String statusOverride, String interruptionReason) {
+        JSObject data = buildActiveRecordingSession(statusOverride, interruptionReason);
+        if (data == null) return;
+        getContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(ACTIVE_RECORDING_SESSION_KEY, data.toString())
+            .apply();
+    }
+
+    private void clearActiveRecordingSession() {
+        getContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .remove(ACTIVE_RECORDING_SESSION_KEY)
+            .apply();
+        activeSessionId = null;
+        activeSessionStartedAtMs = 0;
+        activeRecordingFilePath = null;
+        activeRecordingDirectory = null;
+    }
+
+    private JSObject loadPersistedRecordingSession() {
+        SharedPreferences prefs = getContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        String raw = prefs.getString(ACTIVE_RECORDING_SESSION_KEY, null);
+        if (raw == null) return null;
+        try {
+            org.json.JSONObject parsed = new org.json.JSONObject(raw);
+            JSObject data = new JSObject();
+            java.util.Iterator<String> keys = parsed.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                data.put(key, parsed.get(key));
+            }
+            return data;
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to parse active recording session", e);
+            return null;
+        }
+    }
+
+    private boolean recoverySessionHasAudio(JSObject session) {
+        String filePath = session.getString("filePath");
+        if (filePath == null) return false;
+        File file = new File(filePath.startsWith("file://") ? Uri.parse(filePath).getPath() : filePath);
+        return file.exists() || session.optBoolean("hasSegments", false);
+    }
+
+    private boolean hasRecoverableSegments(String filePath) {
+        if (filePath == null) return false;
+        File file = new File(filePath.startsWith("file://") ? Uri.parse(filePath).getPath() : filePath);
+        String key = "voice_recorder_segments_" + file.getName();
+        java.util.Set<String> savedSegments = getContext()
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getStringSet(key, null);
+        if (savedSegments == null) return false;
+        for (String segment : savedSegments) {
+            File segmentFile = new File(segment);
+            if (segmentFile.exists() && segmentFile.length() > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean requestAudioFocusForRecording() {
+        AudioManager manager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+        if (manager == null) return false;
+
+        int result;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            AudioAttributes attributes = new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build();
+            audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                .setAudioAttributes(attributes)
+                .setOnAudioFocusChangeListener(audioFocusChangeListener)
+                .build();
+            result = manager.requestAudioFocus(audioFocusRequest);
+        } else {
+            result = manager.requestAudioFocus(
+                audioFocusChangeListener,
+                AudioManager.STREAM_VOICE_CALL,
+                AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+            );
+        }
+        return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+    }
+
+    private void abandonAudioFocus() {
+        AudioManager manager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+        if (manager == null) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && audioFocusRequest != null) {
+            manager.abandonAudioFocusRequest(audioFocusRequest);
+            audioFocusRequest = null;
+        } else {
+            manager.abandonAudioFocus(audioFocusChangeListener);
+        }
+    }
+
+    private void handleAudioFocusChange(int focusChange) {
+        if (focusChange == AudioManager.AUDIOFOCUS_GAIN) {
+            if (recorderPausedForFocusLoss && customMediaRecorder != null) {
+                try {
+                    if (customMediaRecorder.resumeRecording()) {
+                        recorderPausedForFocusLoss = false;
+                        persistActiveRecordingSession(CurrentRecordingStatus.RECORDING.name(), null);
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to resume after audio focus gain", e);
+                }
+            }
+            return;
+        }
+
+        if (focusChange == AudioManager.AUDIOFOCUS_LOSS ||
+            focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+            if (customMediaRecorder != null &&
+                customMediaRecorder.getCurrentStatus() == CurrentRecordingStatus.RECORDING) {
+                try {
+                    if (customMediaRecorder.pauseRecording()) {
+                        recorderPausedForFocusLoss = true;
+                        persistActiveRecordingSession("INTERRUPTED", "audioFocusLoss");
+                    }
+                } catch (Exception e) {
+                    persistActiveRecordingSession("INTERRUPTED", "audioFocusLoss");
+                    Log.e(TAG, "Failed to pause after audio focus loss", e);
+                }
+            }
+
+            if (isStreaming) {
+                JSObject data = new JSObject();
+                data.put("status", "INTERRUPTED");
+                data.put("reason", "audioFocusLoss");
+                notifyListeners(EVENT_STATE_CHANGE, data);
+                stopStreamingInternal();
+            }
+        }
     }
 
      private long getMsDurationOfAudioFile(String filePath) {
@@ -636,6 +917,11 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
             return;
         }
 
+        if (customMediaRecorder != null && customMediaRecorder.getCurrentStatus() != CurrentRecordingStatus.NONE) {
+            call.resolve(ResponseGenerator.failResponse());
+            return;
+        }
+
         // Check permissions first
         if (getPermissionState(RECORD_AUDIO_ALIAS) != PermissionState.GRANTED) {
             call.resolve(ResponseGenerator.failResponse());
@@ -664,6 +950,11 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
         String sessionId = call.getString("persistSessionId");
 
         try {
+            if (!requestAudioFocusForRecording()) {
+                call.resolve(ResponseGenerator.failResponse());
+                return;
+            }
+
             if (sessionId != null && !sessionId.isEmpty()) {
                 if (!isValidSessionId(sessionId)) {
                     Log.e(TAG, "Invalid persistSessionId (unsafe characters)");
@@ -715,6 +1006,7 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
             call.resolve(ResponseGenerator.successResponse());
         } catch (Exception e) {
             Log.e(TAG, "Error starting audio stream", e);
+            abandonAudioFocus();
             if (foregroundServiceForStreaming && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 stopForegroundService();
                 foregroundServiceForStreaming = false;
@@ -736,6 +1028,19 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
                 samplesRead = audioRecord.read(audioBuffer, 0, audioBuffer.length);
             } catch (Exception e) {
                 Log.e(TAG, "audioRecord.read failed", e);
+                JSObject data = new JSObject();
+                data.put("status", "INTERRUPTED");
+                data.put("reason", "audioRecordReadException");
+                notifyListeners(EVENT_STATE_CHANGE, data);
+                break;
+            }
+
+            if (samplesRead < 0) {
+                Log.e(TAG, "AudioRecord.read returned error: " + samplesRead);
+                JSObject data = new JSObject();
+                data.put("status", "INTERRUPTED");
+                data.put("reason", "audioRecordReadError:" + samplesRead);
+                notifyListeners(EVENT_STATE_CHANGE, data);
                 break;
             }
 
@@ -814,6 +1119,8 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
                 }
             }
         }
+        isStreaming = false;
+        stopStreamingInternal();
     }
 
     // --- Chunk persistence helpers ---
@@ -948,6 +1255,8 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
             try { audioRecord.release(); } catch (Exception ignored) {}
             audioRecord = null;
         }
+
+        abandonAudioFocus();
 
         AudioManager audioManager = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
         if (audioManager != null) {

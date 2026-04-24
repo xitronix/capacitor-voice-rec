@@ -27,6 +27,17 @@ public class VoiceRecorder: CAPPlugin {
             name: AVAudioSession.routeChangeNotification,
             object: nil
         )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleMediaServicesReset),
+            name: AVAudioSession.mediaServicesWereResetNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     @objc func canDeviceVoiceRecord(_ call: CAPPluginCall) {
@@ -48,6 +59,11 @@ public class VoiceRecorder: CAPPlugin {
     }
 
     @objc func startRecording(_ call: CAPPluginCall) {
+        if isStreaming {
+            call.reject("Audio streaming is already active")
+            return
+        }
+
         if(!doesUserGaveAudioRecordingPermission()) {
             call.reject(Messages.MISSING_PERMISSION)
             return
@@ -71,6 +87,11 @@ public class VoiceRecorder: CAPPlugin {
     }
 
     @objc func continueRecording(_ call: CAPPluginCall) {
+        if isStreaming {
+            call.reject("Audio streaming is already active")
+            return
+        }
+
         if(!doesUserGaveAudioRecordingPermission()) {
             call.reject(Messages.MISSING_PERMISSION)
             return
@@ -169,6 +190,18 @@ public class VoiceRecorder: CAPPlugin {
     @objc func getCurrentStatus(_ call: CAPPluginCall) {
         let status = customMediaRecorder.getCurrentStatus()
         call.resolve(ResponseGenerator.statusResponse(status))
+    }
+
+    @objc func getActiveRecordingSession(_ call: CAPPluginCall) {
+        if let session = customMediaRecorder.getActiveRecordingSession() {
+            call.resolve(ResponseGenerator.dataResponse(session))
+        } else {
+            call.resolve(ResponseGenerator.dataResponse(NSNull()))
+        }
+    }
+
+    @objc func listRecoverableRecordingSessions(_ call: CAPPluginCall) {
+        call.resolve(["sessions": customMediaRecorder.listRecoverableSessions()])
     }
 
     /**
@@ -305,6 +338,11 @@ public class VoiceRecorder: CAPPlugin {
 
     @objc func startAudioStream(_ call: CAPPluginCall) {
         if isStreaming {
+            call.resolve(ResponseGenerator.failResponse())
+            return
+        }
+
+        if customMediaRecorder.getCurrentStatus() != .NONE {
             call.resolve(ResponseGenerator.failResponse())
             return
         }
@@ -701,16 +739,35 @@ public class VoiceRecorder: CAPPlugin {
             
         case .ended:
             if isStreaming {
-                do {
-                    try AVAudioSession.sharedInstance().setActive(true)
-                    try audioEngine?.start()
-                } catch {
-                    print("VoiceRecorder: Failed to restart audio engine: \(error)")
+                guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else {
+                    return
+                }
+                let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                if options.contains(.shouldResume) {
+                    reinstallEngineAndTap()
+                } else {
+                    notifyListeners("recordingStateChange", data: ["status": "INTERRUPTED", "reason": "audioSessionInterruption"])
                 }
             }
             
         @unknown default:
             break
+        }
+    }
+
+    @objc private func handleMediaServicesReset(notification: Notification) {
+        if isStreaming {
+            isStreaming = false
+            if let inputNode = inputNode {
+                inputNode.removeTap(onBus: 0)
+            }
+            audioEngine?.stop()
+            audioEngine = nil
+            inputNode = nil
+            persistSessionId = nil
+            persistSessionDir = nil
+            persistSeq = 0
+            notifyListeners("recordingStateChange", data: ["status": "INTERRUPTED", "reason": "mediaServicesReset"])
         }
     }
     

@@ -16,6 +16,8 @@ import type {
   ListLiveChunksResult,
   ReadLiveChunkResult,
   LiveChunkSessionInfo,
+  ActiveRecordingSessionResult,
+  RecoverableRecordingSessionsResult,
 } from './definitions';
 
 // IndexedDB-backed live-chunk storage for web parity. Keyed by (sessionId, seq).
@@ -115,6 +117,14 @@ export class VoiceRecorderWeb extends WebPlugin implements VoiceRecorderPlugin {
 
   public getCurrentStatus(): Promise<CurrentRecordingStatus> {
     return Promise.resolve(this.currentStatus);
+  }
+
+  public async getActiveRecordingSession(): Promise<ActiveRecordingSessionResult> {
+    return { value: null };
+  }
+
+  public async listRecoverableRecordingSessions(): Promise<RecoverableRecordingSessionsResult> {
+    return { sessions: [] };
   }
 
   public async getRecordingInfo(options: { filePath: string }): Promise<RecordingInfoData> {
