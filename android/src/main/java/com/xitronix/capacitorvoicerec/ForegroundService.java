@@ -62,19 +62,27 @@ public class ForegroundService extends Service {
         if (intent != null) {
             String iconName = intent.getStringExtra(EXTRA_ICON_RES_NAME);
             startForeground(NOTIFICATION_ID, buildNotification(iconName));
-            
+
             String action = intent.getAction();
             if (action != null && action.equals(ACTION_STOP_FOREGROUND_SERVICE)) {
-                // If we have an active recorder in the service, stop it
+                // Prefer file-recording stop; if no active recorder, try streaming stop.
+                boolean stopped = false;
                 if (VoiceRecorder.getActiveRecorder() != null) {
                     try {
                         VoiceRecorder.getActiveRecorder().stopRecording();
+                        stopped = true;
                     } catch (Exception e) {
                         Log.e(TAG, "Error stopping recording in foreground service", e);
                     }
                 }
-                
-                // Stop the service
+                if (!stopped) {
+                    try {
+                        VoiceRecorder.onForegroundServiceStopRequestedForStreaming();
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error stopping streaming in foreground service", e);
+                    }
+                }
+
                 stopForeground(true);
                 stopSelf();
                 return START_NOT_STICKY;

@@ -19,4 +19,11 @@ CAP_PLUGIN(VoiceRecorder, "VoiceRecorder",
            CAP_PLUGIN_METHOD(stopAudioStream, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(getStreamingStatus, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(listRecordingFiles, CAPPluginReturnPromise);
+           CAP_PLUGIN_METHOD(listLiveChunkSessions, CAPPluginReturnPromise);
+           CAP_PLUGIN_METHOD(listLiveChunks, CAPPluginReturnPromise);
+           CAP_PLUGIN_METHOD(readLiveChunk, CAPPluginReturnPromise);
+           CAP_PLUGIN_METHOD(deleteLiveChunk, CAPPluginReturnPromise);
+           CAP_PLUGIN_METHOD(deleteLiveChunkSession, CAPPluginReturnPromise);
+           CAP_PLUGIN_METHOD(getLiveChunkSessionInfo, CAPPluginReturnPromise);
+           CAP_PLUGIN_METHOD(assembleLiveChunksToWav, CAPPluginReturnPromise);
 )
