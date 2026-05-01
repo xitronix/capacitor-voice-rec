@@ -804,11 +804,7 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
             }
 
             if (isStreaming) {
-                JSObject data = new JSObject();
-                data.put("status", "INTERRUPTED");
-                data.put("reason", "audioFocusLoss");
-                notifyListeners(EVENT_STATE_CHANGE, data);
-                stopStreamingInternal();
+                Log.i(TAG, "Ignoring audio focus loss during live streaming; AudioRecord remains authoritative");
             }
         }
     }
@@ -912,8 +908,13 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
 
     @PluginMethod
     public void startAudioStream(PluginCall call) {
+        String sessionId = call.getString("persistSessionId");
         if (isStreaming) {
-            call.resolve(ResponseGenerator.failResponse());
+            if (persistSessionId != null && persistSessionId.equals(sessionId)) {
+                call.resolve(ResponseGenerator.successResponse());
+            } else {
+                call.resolve(ResponseGenerator.failResponse());
+            }
             return;
         }
 
@@ -947,14 +948,7 @@ public class VoiceRecorder extends Plugin implements CustomMediaRecorder.OnStatu
         );
 
         boolean requestFgs = Boolean.TRUE.equals(call.getBoolean("useForegroundService", false));
-        String sessionId = call.getString("persistSessionId");
-
         try {
-            if (!requestAudioFocusForRecording()) {
-                call.resolve(ResponseGenerator.failResponse());
-                return;
-            }
-
             if (sessionId != null && !sessionId.isEmpty()) {
                 if (!isValidSessionId(sessionId)) {
                     Log.e(TAG, "Invalid persistSessionId (unsafe characters)");
