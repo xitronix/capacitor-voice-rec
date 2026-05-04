@@ -1,6 +1,6 @@
 {
   "name": "capacitor-voice-rec",
-  "version": "7.0.0",
+  "version": "7.1.0",
   "description": "Capacitor plugin for voice recording",
   "main": "dist/plugin.cjs.js",
   "module": "dist/esm/index.js",
@@ -48,7 +48,7 @@
     "swiftlint": "node-swiftlint",
     "docgen": "docgen --api VoiceRecorderPlugin --output-readme README.md --output-json dist/docs.json",
     "build": "npm run clean && tsc && rollup -c rollup.config.mjs",
-    "clean": "rimraf ./dist",
+    "clean": "node -e \"require('fs').rmSync('./dist',{recursive:true,force:true})\"",
     "watch": "tsc --watch",
     "prepublishOnly": "npm run build",
     "prepare": "npm run build"
@@ -66,7 +66,6 @@
     "@typescript-eslint/eslint-plugin": "^8.56.0",
     "eslint": "^9.39.2",
     "prettier": "^3.5.1",
-    "rimraf": "^6.0.1",
     "rollup": "^4.34.8",
     "swiftlint": "^2.0.0",
     "typescript": "^5.9.3"

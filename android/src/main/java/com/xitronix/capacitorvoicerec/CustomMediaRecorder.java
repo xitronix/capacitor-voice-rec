@@ -34,6 +34,7 @@ public class CustomMediaRecorder {
     // Interface for status change callbacks
     public interface OnStatusChangeListener {
         void onStatusChange(CurrentRecordingStatus status);
+        default void onRecordingError(String reason) {}
     }
 
     public CustomMediaRecorder(Context context) {
@@ -58,6 +59,22 @@ public class CustomMediaRecorder {
         cleanupRecorder(); // Clean up any previous instance first
 
         mediaRecorder = new MediaRecorder();
+        mediaRecorder.setOnErrorListener((mr, what, extra) -> {
+            Log.e(TAG, "MediaRecorder error what=" + what + " extra=" + extra);
+            if (listener != null) {
+                listener.onRecordingError(what == MediaRecorder.MEDIA_ERROR_SERVER_DIED
+                    ? "mediaServerDied"
+                    : "mediaRecorderError:" + what);
+            }
+            cleanupRecorder();
+            setStatus(CurrentRecordingStatus.NONE);
+        });
+        mediaRecorder.setOnInfoListener((mr, what, extra) -> {
+            Log.w(TAG, "MediaRecorder info what=" + what + " extra=" + extra);
+            if (listener != null) {
+                listener.onRecordingError("mediaRecorderInfo:" + what);
+            }
+        });
         mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
         mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.AAC_ADTS);
         mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
